@@ -139,6 +139,10 @@ std::string NormaliseDll(std::string dll) {
   // The UCRT's API sets (api-ms-win-crt-runtime-l1-1-0.dll, ...) are all
   // ucrtbase.dll, as Windows' API set map resolves them.
   if (dll.rfind("api-ms-win-crt-", 0) == 0) return "ucrtbase.dll";
+  // XInput 1.4 keeps 1.3's exports (by ordinal: #2 XInputGetState, #3
+  // XInputSetState, #4 XInputGetCapabilities) and their signatures; one set
+  // of handlers serves both.
+  if (dll == "xinput1_4.dll") return "xinput1_3.dll";
   return dll;
 }
 

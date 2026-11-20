@@ -1,4 +1,5 @@
-// XInput 1.3 (xinput1_3.dll, by ordinal) on SDL gamepads. Up to four pads
+// XInput 1.3 (xinput1_3.dll, by ordinal; xinput1_4.dll maps here, see
+// NormaliseDll) on SDL gamepads. Up to four pads
 // take the user indices in the order they connect and keep them until
 // they disconnect. SDL's gamepad layout is the Xbox controller's (south =
 // A, east = B, west = X, north = Y); stick Y is up in XInput and down in
