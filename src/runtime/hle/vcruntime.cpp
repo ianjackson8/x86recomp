@@ -9,6 +9,7 @@
 
 #include "runtime/hle/hle.h"
 #include "runtime/hle/kernel32_state.h"
+#include "runtime/hle/rtti.h"
 #include "runtime/hle/undname.h"
 #include "runtime/log.h"
 #include "runtime/runtime.h"
@@ -138,6 +139,39 @@ HLE64("vcruntime140.dll", __std_type_info_name, kCdecl) {
 // The list of undecorated names type_info::name() allocated: not built
 // (see __std_type_info_name), so nothing to free.
 HLE64("vcruntime140.dll", __std_type_info_destroy_list, kCdecl) { return 0; }
+
+// ---- RTTI (32-bit guests: x64's RTTI holds image-relative offsets) -------------
+// dynamic_cast, typeid, dynamic_cast<void*> over MSVC's RTTI (rtti.h). A
+// failed cast to a reference throws std::bad_cast, and 32-bit C++
+// exceptions are not modelled yet: fatal, named; so is a case rtti.h does
+// not decide.
+
+namespace {
+const rtti::Read32 kRd = [](uint32_t a) { return Rd32(a); };
+const rtti::ReadStr kName = [](uint32_t a) { return std::string(S(a)); };
+}  // namespace
+
+// __RTDynamicCast(p, vfdelta, src_type, target_type, is_reference)
+HLE("vcruntime140.dll", __RTDynamicCast, kCdecl) {
+  const uint32_t p = uint32_t(Arg(c, 0)), src = uint32_t(Arg(c, 2)), target = uint32_t(Arg(c, 3));
+  uint32_t out = 0;
+  const rtti::Result r =
+      rtti::DynamicCast(p, int32_t(Arg(c, 1)), src, target, kRd, kName, &out);
+  if (r == rtti::Result::kUndecided)
+    FatalF("dynamic_cast<%s>(%s at %08X): a case not modelled", S(target + 8), S(src + 8), p);
+  if (r == rtti::Result::kNull && Arg(c, 4) && p)
+    FatalF("dynamic_cast<%s&>(%s at %08X) failed (std::bad_cast; C++ exceptions not modelled)",
+           S(target + 8), S(src + 8), p);
+  return out;
+}
+// __RTtypeid(p): the complete object's TypeDescriptor (typeid(*p)).
+HLE("vcruntime140.dll", __RTtypeid, kCdecl) {
+  const uint32_t p = uint32_t(Arg(c, 0));
+  if (!p) FatalF("typeid(*nullptr) (std::bad_typeid; C++ exceptions not modelled)");
+  return rtti::TypeOf(p, kRd);
+}
+// __RTCastToVoid(p): the complete object (dynamic_cast<void*>(p)).
+HLE("vcruntime140.dll", __RTCastToVoid, kCdecl) { return rtti::CompleteObject(uint32_t(Arg(c, 0)), kRd); }
 
 // ---- std::exception -------------------------------------------------------------
 // __std_exception_data {const char* _What; bool _DoFree;}: _DoFree means

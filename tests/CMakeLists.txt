@@ -461,3 +461,10 @@ if(NOT RECOMP_IOS)
   target_link_libraries(host_context_test PRIVATE recomp_runtime)
   add_test(NAME host_context COMMAND host_context_test)
 endif()
+
+# rtti_test: MSVC RTTI casts (runtime/hle/rtti.h) over hand-built tables;
+# portable.
+add_executable(rtti_test rtti_test.cpp)
+target_include_directories(rtti_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_compile_features(rtti_test PRIVATE cxx_std_20)
+add_test(NAME rtti COMMAND rtti_test)
