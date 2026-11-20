@@ -2573,6 +2573,32 @@ void PutDevMode(uint32_t dm, const Mode& m) {
   Wr32(dm + 120, 60);
 }
 
+// One monitor: the virtual display (g_display_w x g_display_h, which a
+// game's mode switch changes), primary, \\.\DISPLAY1.
+constexpr uint32_t kMonitor = 0x00F00001;
+HLE("user32.dll", MonitorFromWindow, 2) { return kMonitor; }
+// GetMonitorInfoA(hmon, info): MONITORINFO (cbSize 40) {cbSize, rcMonitor,
+// rcWork, dwFlags} or MONITORINFOEXA (72) with szDevice[32] after it.
+HLE("user32.dll", GetMonitorInfoA, 2) {
+  const gaddr mi = Arg(c, 1);
+  const uint32_t size = mi ? Rd32(mi) : 0;
+  if (Arg(c, 0) != kMonitor || (size != 40 && size != 72)) {
+    SetLastError(win32::kErrorInvalidParameter);
+    return 0;
+  }
+  const int32_t rect[4] = {0, 0, g_display_w, g_display_h};
+  for (int i = 0; i < 4; i++) {
+    Wr32(mi + 4 + 4 * i, uint32_t(rect[i]));   // rcMonitor
+    Wr32(mi + 20 + 4 * i, uint32_t(rect[i]));  // rcWork
+  }
+  Wr32(mi + 36, 1);  // MONITORINFOF_PRIMARY
+  if (size == 72) {
+    std::memset(GPtr(mi + 40), 0, 32);
+    PutStr(mi + 40, "\\\\.\\DISPLAY1");
+  }
+  return 1;
+}
+
 HLE("user32.dll", EnumDisplaySettingsA, 3) {
   EnsureSdlVideo();
   uint32_t idx = Arg(c, 1), dm = Arg(c, 2);
