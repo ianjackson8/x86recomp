@@ -116,6 +116,21 @@ bool SetThreadRealTime(uint64_t period_ns, uint64_t computation_ns, uint64_t con
 // guest needs a bigger stack than the OS gives it).
 void RunOnStack(void* stack, size_t size, void (*fn)());
 
+// ---- host contexts (guest fibers) ----------------------------------------------
+// An execution context with its own host stack, switched to on the same
+// thread (thread-locals, signal masks and the thread's identity stay). A new
+// context starts in fn(arg), which must not return. Not on iOS/tvOS (their
+// swapcontext does not switch): NewHostContext is fatal there.
+struct HostContext;
+// The calling execution, as a context SwitchHostContext can save into.
+HostContext* CurrentHostContext();
+HostContext* NewHostContext(size_t stack_size, void (*fn)(void*), void* arg);
+// Saves the caller into `from` and resumes `to`; returns when something
+// switches back to `from`.
+void SwitchHostContext(HostContext* from, HostContext* to);
+// Frees a context that is not running (and its stack).
+void FreeHostContext(HostContext* c);
+
 // ---- faults (SIGSEGV/SIGBUS handlers; `uc` is the handler's ucontext)
 struct FaultContext {
   bool write_known = false;  // whether `write` comes from the CPU

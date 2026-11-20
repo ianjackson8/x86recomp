@@ -12,12 +12,14 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <signal.h>
 #include <time.h>
 #include <ucontext.h>
 
 #include <cstdio>
+#include <cstdlib>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -68,6 +70,74 @@ void RunOnStack(void* stack, size_t size, void (*fn)()) {
 }
 #pragma clang diagnostic pop
 #endif
+
+// ---- host contexts --------------------------------------------------------------
+
+struct HostContext {
+  ucontext_t uc;
+  void* stack = nullptr;  // owned (null: a thread's own execution)
+  size_t stack_size = 0;
+  void (*fn)(void*) = nullptr;
+  void* arg = nullptr;
+  bool started = false;
+};
+
+HostContext* CurrentHostContext() { return new HostContext; }
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+HostContext* NewHostContext(size_t, void (*)(void*), void*) {
+  std::fprintf(stderr, "FATAL: fibers are not supported on iOS/tvOS yet\n");
+  std::abort();
+}
+void SwitchHostContext(HostContext*, HostContext*) { std::abort(); }
+#else
+namespace {
+// makecontext passes int arguments only: the context starting next is
+// handed over through this thread-local (the switch to it is on the same
+// thread, right after it is set).
+thread_local HostContext* t_starting = nullptr;
+void HostContextEntry() {
+  HostContext* c = t_starting;
+  t_starting = nullptr;
+  c->fn(c->arg);
+  std::fprintf(stderr, "FATAL: a host context's start function returned\n");
+  std::abort();
+}
+}  // namespace
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+HostContext* NewHostContext(size_t stack_size, void (*fn)(void*), void* arg) {
+  auto* c = new HostContext;
+  c->stack = mmap(nullptr, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                  -1, 0);
+  if (c->stack == MAP_FAILED) {
+    std::fprintf(stderr, "FATAL: cannot allocate a %zu byte host stack\n", stack_size);
+    std::abort();
+  }
+  c->stack_size = stack_size;
+  c->fn = fn;
+  c->arg = arg;
+  getcontext(&c->uc);
+  c->uc.uc_stack.ss_sp = c->stack;
+  c->uc.uc_stack.ss_size = stack_size;
+  c->uc.uc_link = nullptr;
+  makecontext(&c->uc, HostContextEntry, 0);
+  return c;
+}
+void SwitchHostContext(HostContext* from, HostContext* to) {
+  if (to->fn && !to->started) {  // its first run: HostContextEntry takes it from here
+    to->started = true;
+    t_starting = to;
+  }
+  swapcontext(&from->uc, &to->uc);
+}
+#pragma clang diagnostic pop
+#endif
+
+void FreeHostContext(HostContext* c) {
+  if (c->stack) munmap(c->stack, c->stack_size);
+  delete c;
+}
 
 FaultContext ReadFaultContext(const void* uc) {
   FaultContext f;

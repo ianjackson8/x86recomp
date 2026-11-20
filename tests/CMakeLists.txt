@@ -453,3 +453,11 @@ add_executable(bmp_test bmp_test.cpp)
 target_include_directories(bmp_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_features(bmp_test PRIVATE cxx_std_20)
 add_test(NAME bmp COMMAND bmp_test)
+
+# host_context_test: the host side of guest fibers (platform.h); not on
+# iOS/tvOS.
+if(NOT RECOMP_IOS)
+  add_executable(host_context_test host_context_test.cpp)
+  target_link_libraries(host_context_test PRIVATE recomp_runtime)
+  add_test(NAME host_context COMMAND host_context_test)
+endif()
