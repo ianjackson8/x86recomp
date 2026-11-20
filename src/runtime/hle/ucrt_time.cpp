@@ -91,13 +91,13 @@ bool AscTime(const std::tm& t, char out[26]) {
 
 }  // namespace
 
-HLE64("ucrtbase.dll", _time64, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", _time64, kCdecl) {
   int64_t t = int64_t(std::time(nullptr));
   if (Arg(c, 0)) Wr64(Arg(c, 0), uint64_t(t));
   return uint64_t(t);
 }
 
-HLE64("ucrtbase.dll", _localtime64, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", _localtime64, kCdecl) {
   int64_t t = int64_t(Rd64(Arg(c, 0)));
   if (t < 0 || t > kMaxTime64) {
     Fail(EINVAL);
@@ -108,7 +108,7 @@ HLE64("ucrtbase.dll", _localtime64, kCdecl) {
 }
 
 // _gmtime64_s(tm*, const __time64_t*): 0 or EINVAL (the tm then all -1).
-HLE64("ucrtbase.dll", _gmtime64_s, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", _gmtime64_s, kCdecl) {
   gaddr out = Arg(c, 0), tp = Arg(c, 1);
   if (!out) {
     Fail(EINVAL);
@@ -126,7 +126,7 @@ HLE64("ucrtbase.dll", _gmtime64_s, kCdecl) {
 
 // _mkgmtime64(tm*): the tm as UTC, normalised in place (fields out of their
 // ranges carry over, wday and yday are set); -1 out of range.
-HLE64("ucrtbase.dll", _mkgmtime64, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", _mkgmtime64, kCdecl) {
   gaddr p = Arg(c, 0);
   std::tm t = GetTm(p);
   int64_t r = int64_t(timegm(&t));
@@ -139,7 +139,7 @@ HLE64("ucrtbase.dll", _mkgmtime64, kCdecl) {
   return uint64_t(r);
 }
 
-HLE64("ucrtbase.dll", _ctime64, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", _ctime64, kCdecl) {
   int64_t t = int64_t(Rd64(Arg(c, 0)));
   char s[26];
   if (t < 0 || t > kMaxTime64 || !AscTime(Local(t), s)) {
@@ -150,7 +150,7 @@ HLE64("ucrtbase.dll", _ctime64, kCdecl) {
   return TextBuffer();
 }
 
-HLE64("ucrtbase.dll", asctime, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", asctime, kCdecl) {
   char s[26];
   if (!AscTime(GetTm(Arg(c, 0)), s)) {
     Fail(EINVAL);
@@ -163,7 +163,7 @@ HLE64("ucrtbase.dll", asctime, kCdecl) {
 // strftime(buf, max, format, tm): the conversions that do not depend on the
 // locale or the time zone, and the "C" locale's names; others are fatal.
 // 0 (and an empty buf, errno ERANGE) if the result does not fit.
-HLE64("ucrtbase.dll", strftime, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", strftime, kCdecl) {
   gaddr buf = Arg(c, 0);
   uint64_t max = Arg(c, 1);
   std::string fmt = GStr(Arg(c, 2));

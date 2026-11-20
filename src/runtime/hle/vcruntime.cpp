@@ -4,9 +4,12 @@
 // to the x64 unwinder (ARCHITECTURE.md, "64-bit guests").
 
 #include <cstring>
+#include <mutex>
+#include <string>
 
 #include "runtime/hle/hle.h"
 #include "runtime/hle/kernel32_state.h"
+#include "runtime/hle/undname.h"
 #include "runtime/log.h"
 #include "runtime/runtime.h"
 
@@ -14,6 +17,8 @@ namespace recomp::hle {
 namespace {
 
 const char* S(gaddr p) { return g_proc->mem.ptr<const char>(p); }
+// The size of a guest pointer: field offsets in the structures below.
+uint32_t PtrSize() { return g_proc->x64 ? 8 : 4; }
 
 }  // namespace
 
@@ -68,12 +73,37 @@ HLE64("vcruntime140.dll", strstr, kCdecl) {
 HLE64("vcruntime140.dll", __std_type_info_compare, kCdecl) {
   gaddr a = Arg(c, 0), b = Arg(c, 1);
   if (a == b) return 0;
-  int r = std::strcmp(S(a + 8 + 1), S(b + 8 + 1));
+  const uint32_t ps = PtrSize();  // past _UndecoratedName
+  int r = std::strcmp(S(a + ps + 1), S(b + ps + 1));
   return uint32_t(r < 0 ? -1 : r > 0 ? 1 : 0);
 }
 
-// The list of undecorated names type_info::name() allocated: never built
-// (name() is not provided), so nothing to free.
+// type_info::name(): the undecorated name, made once per type and kept in
+// the descriptor's _UndecoratedName (published under a lock, as the CRT's
+// compare-exchange does; a racing thread's copy is freed). Not linked into
+// the guest's list (root): the strings live until the process ends, so
+// __std_type_info_destroy_list has nothing to free. A decorated name that
+// does not demangle is fatal and named, never a guessed text.
+HLE64("vcruntime140.dll", __std_type_info_name, kCdecl) {
+  static std::mutex mu;
+  const gaddr data = Arg(c, 0);
+  if (gaddr und = RdPtr(data)) return und;
+  const std::string decorated = S(data + PtrSize());
+  const std::string name = UndnameTypeName(decorated);
+  if (name.empty()) FatalF("type_info::name(): cannot undecorate %s", decorated.c_str());
+  gaddr p = HeapAllocProcess(name.size() + 1, false);
+  PutStr(p, name);
+  std::lock_guard<std::mutex> l(mu);
+  if (gaddr won = RdPtr(data)) {
+    HeapFreeProcess(p);
+    return won;
+  }
+  WrPtr(data, p);
+  return p;
+}
+
+// The list of undecorated names type_info::name() allocated: not built
+// (see __std_type_info_name), so nothing to free.
 HLE64("vcruntime140.dll", __std_type_info_destroy_list, kCdecl) { return 0; }
 
 // ---- std::exception -------------------------------------------------------------
@@ -82,25 +112,27 @@ HLE64("vcruntime140.dll", __std_type_info_destroy_list, kCdecl) { return 0; }
 
 HLE64("vcruntime140.dll", __std_exception_copy, kCdecl) {
   gaddr from = Arg(c, 0), to = Arg(c, 1);
-  gaddr what = Rd64(from);
-  if (Rd8(from + 8) && what) {
+  const uint32_t ps = PtrSize();
+  gaddr what = RdPtr(from);
+  if (Rd8(from + ps) && what) {
     std::string s = S(what);
     gaddr copy = HeapAllocProcess(s.size() + 1, false);
     PutStr(copy, s);
-    Wr64(to, copy);
-    Wr8(to + 8, 1);
+    WrPtr(to, copy);
+    Wr8(to + ps, 1);
   } else {
-    Wr64(to, what);
-    Wr8(to + 8, 0);
+    WrPtr(to, what);
+    Wr8(to + ps, 0);
   }
   return 0;
 }
 
 HLE64("vcruntime140.dll", __std_exception_destroy, kCdecl) {
   gaddr data = Arg(c, 0);
-  if (Rd8(data + 8)) HeapFreeProcess(Rd64(data));
-  Wr64(data, 0);
-  Wr8(data + 8, 0);
+  const uint32_t ps = PtrSize();
+  if (Rd8(data + ps)) HeapFreeProcess(RdPtr(data));
+  WrPtr(data, 0);
+  Wr8(data + ps, 0);
   return 0;
 }
 

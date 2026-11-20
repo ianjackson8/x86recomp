@@ -419,3 +419,9 @@ if(NOT RECOMP_IOS)
   target_compile_options(lift_flags_test PRIVATE -O1 -fno-strict-aliasing)
   add_test(NAME lift_flags COMMAND lift_flags_test)
 endif()
+# ucrt_fp_test: the CRT's floating-point control bits against the x87 CW
+# and MXCSR (runtime/hle/ucrt_fp.h); portable.
+add_executable(ucrt_fp_test ucrt_fp_test.cpp)
+target_include_directories(ucrt_fp_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_compile_features(ucrt_fp_test PRIVATE cxx_std_20)
+add_test(NAME ucrt_fp COMMAND ucrt_fp_test)

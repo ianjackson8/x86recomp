@@ -1,4 +1,4 @@
-// The UCRT's stdio for x64 guests: FILE streams on host files and the
+// The UCRT's stdio (x64 and, where marked HLE64, 32-bit guests): FILE streams on host files and the
 // printf/scanf families. A FILE* is a guest pointer to a small opaque block
 // (the UCRT's FILE is opaque too); the host stream behind it is kept here.
 // Text mode is Windows': reads drop the \r of \r\n and stop at ^Z, writes
@@ -89,19 +89,31 @@ size_t Write(Stream& s, const char* p, size_t n) {
 
 // Successive variadic arguments: 8-byte slots of a guest va_list (floating
 // point ones as doubles).
+// A va_list. x64: every argument in an 8-byte slot. 32-bit guests: packed
+// on 4-byte boundaries; 64-bit integers and doubles take 8 bytes, the rest
+// (int, long, pointers, size_t) 4.
 struct Args {
   gaddr p;
-  uint64_t Next() {
-    uint64_t v = Rd64(p);
-    p += 8;
+  bool x64 = g_proc->x64;
+  uint64_t Next(int bits = 32) {
+    uint64_t v;
+    if (x64 || bits == 64) {
+      v = Rd64(p);
+      p += 8;
+    } else {
+      v = Rd32(p);
+      p += 4;
+    }
     return v;
   }
+  gaddr NextPtr() { return Next(x64 ? 64 : 32); }
   double NextD() {
-    uint64_t b = Next();
+    uint64_t b = Next(64);
     double d;
     std::memcpy(&d, &b, 8);
     return d;
   }
+  int SizeBits() const { return x64 ? 64 : 32; }  // size_t, ptrdiff_t
 };
 
 std::string NanText(double v, bool upper) {
@@ -183,7 +195,7 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
         bits = 64;
         i++;
       } else if (ch == 'z' || ch == 't') {
-        bits = 64;
+        bits = a.SizeBits();
         i++;
       } else if (ch == 'w') {
         wide = true;
@@ -196,7 +208,7 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
           bits = 32;
           i += 3;
         } else {
-          bits = 64;  // size_t
+          bits = a.SizeBits();  // size_t
           i++;
         }
       } else {
@@ -216,7 +228,7 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
         out.push_back('%');
         break;
       case 'd': case 'i': {
-        uint64_t v = a.Next();
+        uint64_t v = a.Next(bits);
         long long s = bits == 64 ? int64_t(v) : bits == 16 ? int16_t(v) : bits == 8 ? int8_t(v)
                                                                              : int32_t(v);
         std::snprintf(buf, sizeof buf, (spec + "lld").c_str(), s);
@@ -224,7 +236,7 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
         break;
       }
       case 'u': case 'o': case 'x': case 'X': {
-        uint64_t v = a.Next();
+        uint64_t v = a.Next(bits);
         unsigned long long u = bits == 64 ? v : bits == 16 ? uint16_t(v) : bits == 8 ? uint8_t(v)
                                                                            : uint32_t(v);
         std::snprintf(buf, sizeof buf, (spec + "ll" + conv).c_str(), u);
@@ -232,7 +244,9 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
         break;
       }
       case 'p': {
-        std::snprintf(buf, sizeof buf, "%016llX", (unsigned long long)a.Next());
+        // As many hex digits as a pointer has: 16 (x64) or 8.
+        if (a.x64) std::snprintf(buf, sizeof buf, "%016llX", (unsigned long long)a.NextPtr());
+        else std::snprintf(buf, sizeof buf, "%08llX", (unsigned long long)a.NextPtr());
         out += Pad(buf, width, flags.find('-') != std::string::npos);
         break;
       }
@@ -244,7 +258,7 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
         break;
       }
       case 's': case 'S': {
-        gaddr p = a.Next();
+        gaddr p = a.NextPtr();
         bool w = conv == 'S' ? !narrow : wide;
         std::string s = !p ? "(null)" : w ? win32::Narrow(GWStr(p)) : GStr(p);
         if (prec >= 0 && size_t(prec) < s.size()) s.resize(size_t(prec));
@@ -307,23 +321,34 @@ uint64_t PutFormatted(uint64_t options, gaddr buf, uint64_t count, const std::st
   return n <= count ? uint32_t(int32_t(n)) : uint32_t(-1);
 }
 
+// The __stdio_common_* functions start with an unsigned __int64 options
+// argument: two stack slots on 32-bit guests, which shift the others.
+uint64_t Opt(const Ctx& c) {
+  return g_proc->x64 ? Arg(c, 0) : (Arg(c, 0) & 0xFFFFFFFFu) | (Arg(c, 1) << 32);
+}
+uint64_t ArgAfterOpt(const Ctx& c, int i) { return Arg(c, g_proc->x64 ? i : i + 1); }
+// size_t(-1) (_TRUNCATE) at the guest's size_t width.
+bool IsTruncate(uint64_t v) { return v == (g_proc->x64 ? ~0ull : 0xFFFFFFFFull); }
+
 }  // namespace
 
 HLE64("ucrtbase.dll", __acrt_iob_func, kCdecl) { return StdStream(uint32_t(Arg(c, 0))); }
 
 // __stdio_common_vsprintf(options, buffer, count, format, locale, va_list)
 HLE64("ucrtbase.dll", __stdio_common_vsprintf, kCdecl) {
-  uint64_t opt = Arg(c, 0);
-  std::string s = Format(GStr(Arg(c, 3)), Args{Arg(c, 5)}, opt & kThreeDigitExponents);
-  return PutFormatted(opt, Arg(c, 1), Arg(c, 2), s);
+  uint64_t opt = Opt(c);
+  std::string s = Format(GStr(ArgAfterOpt(c, 3)), Args{ArgAfterOpt(c, 5)},
+                         opt & kThreeDigitExponents);
+  return PutFormatted(opt, ArgAfterOpt(c, 1), ArgAfterOpt(c, 2), s);
 }
 
 // __stdio_common_vsprintf_s: a buffer too small is an invalid parameter.
 HLE64("ucrtbase.dll", __stdio_common_vsprintf_s, kCdecl) {
-  uint64_t opt = Arg(c, 0);
-  gaddr buf = Arg(c, 1);
-  uint64_t count = Arg(c, 2);
-  std::string s = Format(GStr(Arg(c, 3)), Args{Arg(c, 5)}, opt & kThreeDigitExponents);
+  uint64_t opt = Opt(c);
+  gaddr buf = ArgAfterOpt(c, 1);
+  uint64_t count = ArgAfterOpt(c, 2);
+  std::string s = Format(GStr(ArgAfterOpt(c, 3)), Args{ArgAfterOpt(c, 5)},
+                         opt & kThreeDigitExponents);
   if (!buf || s.size() + 1 > count)
     FatalF("guest sprintf_s: %zu characters into a buffer of %llu", s.size(),
            (unsigned long long)count);
@@ -335,14 +360,16 @@ HLE64("ucrtbase.dll", __stdio_common_vsprintf_s, kCdecl) {
 // locale, va_list): max_count _TRUNCATE ((size_t)-1) truncates to the
 // buffer and returns -1 when it did.
 HLE64("ucrtbase.dll", __stdio_common_vsnprintf_s, kCdecl) {
-  uint64_t opt = Arg(c, 0);
-  gaddr buf = Arg(c, 1);
-  uint64_t size = Arg(c, 2), max = Arg(c, 3);
-  std::string s = Format(GStr(Arg(c, 4)), Args{Arg(c, 6)}, opt & kThreeDigitExponents);
+  uint64_t opt = Opt(c);
+  gaddr buf = ArgAfterOpt(c, 1);
+  uint64_t size = ArgAfterOpt(c, 2), max = ArgAfterOpt(c, 3);
+  std::string s = Format(GStr(ArgAfterOpt(c, 4)), Args{ArgAfterOpt(c, 6)},
+                         opt & kThreeDigitExponents);
   if (!buf || !size) FatalF("guest vsnprintf_s: no buffer");
-  uint64_t limit = std::min(max == ~0ull ? size - 1 : max, size - 1);
+  const bool trunc = IsTruncate(max);
+  uint64_t limit = std::min(trunc ? size - 1 : max, size - 1);
   bool truncated = s.size() > limit;
-  if (truncated && max != ~0ull && max >= size)
+  if (truncated && !trunc && max >= size)
     FatalF("guest vsnprintf_s: %zu characters into a buffer of %llu", s.size(),
            (unsigned long long)size);
   uint64_t k = std::min<uint64_t>(s.size(), limit);
@@ -353,9 +380,10 @@ HLE64("ucrtbase.dll", __stdio_common_vsnprintf_s, kCdecl) {
 
 // __stdio_common_vfprintf(options, stream, format, locale, va_list)
 HLE64("ucrtbase.dll", __stdio_common_vfprintf, kCdecl) {
-  uint64_t opt = Arg(c, 0);
-  Stream& st = Must(Arg(c, 1), "fprintf");
-  std::string s = Format(GStr(Arg(c, 2)), Args{Arg(c, 4)}, opt & kThreeDigitExponents);
+  uint64_t opt = Opt(c);
+  Stream& st = Must(ArgAfterOpt(c, 1), "fprintf");
+  std::string s = Format(GStr(ArgAfterOpt(c, 2)), Args{ArgAfterOpt(c, 4)},
+                         opt & kThreeDigitExponents);
   std::lock_guard<std::recursive_mutex> l(g_streams_mu);
   return Write(st, s.data(), s.size()) == s.size() ? uint32_t(s.size()) : uint32_t(-1);
 }
@@ -409,18 +437,34 @@ gaddr Reopen(const std::string& path, const std::string& mode, gaddr fp) {
 }
 }  // namespace
 
+// _getcwd(buf, maxlen): the guest's current directory, as
+// GetCurrentDirectory gives it; NULL buf allocates (at least maxlen). Too
+// small a buffer: ERANGE and NULL.
+HLE64("ucrtbase.dll", _getcwd, kCdecl) {
+  const std::string d = GuestCurrentDir();
+  gaddr buf = Arg(c, 0);
+  const uint64_t max = uint64_t(int32_t(Arg(c, 1)));
+  if (!buf) {
+    buf = HeapAllocProcess(std::max<uint64_t>(max, d.size() + 1), false);
+  } else if (d.size() + 1 > max) {
+    Wr32(GuestErrno(), ERANGE);
+    return 0;
+  }
+  PutStr(buf, d);
+  return buf;
+}
 HLE64("ucrtbase.dll", fopen, kCdecl) { return Open(GStr(Arg(c, 0)), GStr(Arg(c, 1))); }
-HLE64("ucrtbase.dll", _wfopen, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", _wfopen, kCdecl) {
   return Open(NarrowPath(GWStr(Arg(c, 0))), win32::Narrow(GWStr(Arg(c, 1))));
 }
 // _wfreopen(path, mode, stream); a null path (changing the mode of the open
 // file) is not supported.
-HLE64("ucrtbase.dll", _wfreopen, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", _wfreopen, kCdecl) {
   if (!Arg(c, 0)) FatalF("_wfreopen with a null path (mode change) is not supported");
   return Reopen(NarrowPath(GWStr(Arg(c, 0))), win32::Narrow(GWStr(Arg(c, 1))), Arg(c, 2));
 }
 // fopen_s(&file, path, mode): 0 or the errno.
-HLE64("ucrtbase.dll", fopen_s, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", fopen_s, kCdecl) {
   gaddr f = Open(GStr(Arg(c, 1)), GStr(Arg(c, 2)));
   Wr64(Arg(c, 0), f);
   return f ? 0 : Rd32(GuestErrno());
@@ -511,7 +555,7 @@ HLE64("ucrtbase.dll", fseek, kCdecl) {
   std::lock_guard<std::recursive_mutex> l(g_streams_mu);
   return uint32_t(std::fseek(s.f, long(int32_t(Arg(c, 1))), int(Arg(c, 2))));
 }
-HLE64("ucrtbase.dll", _fseeki64, kCdecl) {
+HLE64_ONLY("ucrtbase.dll", _fseeki64, kCdecl) {
   Stream& s = Must(Arg(c, 0), "_fseeki64");
   std::lock_guard<std::recursive_mutex> l(g_streams_mu);
   return uint32_t(fseeko(s.f, off_t(int64_t(Arg(c, 1))), int(Arg(c, 2))));

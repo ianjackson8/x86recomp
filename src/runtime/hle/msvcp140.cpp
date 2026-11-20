@@ -106,22 +106,22 @@ int UnlockAll(gaddr mtx) {
 
 }  // namespace
 
-HLE64(kDll, _Mtx_init_in_situ, kCdecl) {
+HLE64_ONLY(kDll, _Mtx_init_in_situ, kCdecl) {
   gaddr mtx = Arg(c, 0);
   std::memset(GPtr(mtx), 0, 80);
   Wr32(mtx, uint32_t(Arg(c, 1)));
   Wr32(mtx + 0x48, 0xFFFFFFFF);
   return 0;
 }
-HLE64(kDll, _Mtx_destroy_in_situ, kCdecl) { return 0; }
+HLE64_ONLY(kDll, _Mtx_destroy_in_situ, kCdecl) { return 0; }
 
-HLE64(kDll, _Mtx_lock, kCdecl) {
+HLE64_ONLY(kDll, _Mtx_lock, kCdecl) {
   GuestSyncPoint sync;
   Lock(Arg(c, 0));
   return kSuccess;
 }
 
-HLE64(kDll, _Mtx_trylock, kCdecl) {
+HLE64_ONLY(kDll, _Mtx_trylock, kCdecl) {
   GuestSyncPoint sync;
   gaddr mtx = Arg(c, 0);
   Mtx& s = StateAt<Mtx>(mtx);
@@ -134,7 +134,7 @@ HLE64(kDll, _Mtx_trylock, kCdecl) {
   return kSuccess;
 }
 
-HLE64(kDll, _Mtx_unlock, kCdecl) {
+HLE64_ONLY(kDll, _Mtx_unlock, kCdecl) {
   GuestSyncPoint sync;
   gaddr mtx = Arg(c, 0);
   Mtx& s = StateAt<Mtx>(mtx);
@@ -152,7 +152,7 @@ HLE64(kDll, _Mtx_unlock, kCdecl) {
   return kSuccess;
 }
 
-HLE64(kDll, _Mtx_current_owns, kCdecl) {
+HLE64_ONLY(kDll, _Mtx_current_owns, kCdecl) {
   Mtx& s = StateAt<Mtx>(Arg(c, 0));
   std::lock_guard<std::mutex> l(s.m);
   return s.count > 0 && s.owner == CurrentThread()->tid;
@@ -193,25 +193,25 @@ bool CndWait(gaddr cnd, gaddr mtx, const std::chrono::system_clock::time_point* 
 }
 }  // namespace
 
-HLE64(kDll, _Cnd_init_in_situ, kCdecl) {
+HLE64_ONLY(kDll, _Cnd_init_in_situ, kCdecl) {
   std::memset(GPtr(Arg(c, 0)), 0, 72);
   return 0;
 }
-HLE64(kDll, _Cnd_destroy_in_situ, kCdecl) { return 0; }
+HLE64_ONLY(kDll, _Cnd_destroy_in_situ, kCdecl) { return 0; }
 
-HLE64(kDll, _Cnd_wait, kCdecl) {
+HLE64_ONLY(kDll, _Cnd_wait, kCdecl) {
   GuestSyncPoint sync;
   CndWait(Arg(c, 0), Arg(c, 1), nullptr);
   return kSuccess;
 }
 
-HLE64(kDll, _Cnd_timedwait, kCdecl) {
+HLE64_ONLY(kDll, _Cnd_timedwait, kCdecl) {
   GuestSyncPoint sync;
   auto until = XtimeAt(Arg(c, 2));
   return CndWait(Arg(c, 0), Arg(c, 1), &until) ? kSuccess : kTimedout;
 }
 
-HLE64(kDll, _Cnd_signal, kCdecl) {
+HLE64_ONLY(kDll, _Cnd_signal, kCdecl) {
   GuestSyncPoint sync;
   Cnd& v = StateAt<Cnd>(Arg(c, 0));
   {
@@ -222,7 +222,7 @@ HLE64(kDll, _Cnd_signal, kCdecl) {
   return kSuccess;
 }
 
-HLE64(kDll, _Cnd_broadcast, kCdecl) {
+HLE64_ONLY(kDll, _Cnd_broadcast, kCdecl) {
   GuestSyncPoint sync;
   Cnd& v = StateAt<Cnd>(Arg(c, 0));
   {
@@ -235,13 +235,13 @@ HLE64(kDll, _Cnd_broadcast, kCdecl) {
 
 // notify_all_at_thread_exit registrations: none are made
 // (_Cnd_register_at_thread_exit is not provided), so nothing to broadcast.
-HLE64(kDll, _Cnd_do_broadcast_at_thread_exit, kCdecl) { return 0; }
+HLE64_ONLY(kDll, _Cnd_do_broadcast_at_thread_exit, kCdecl) { return 0; }
 
 // ---- threads ---------------------------------------------------------------------
 
-HLE64(kDll, _Thrd_id, kCdecl) { return CurrentThread()->tid; }
-HLE64(kDll, _Thrd_hardware_concurrency, kCdecl) { return GuestProcessorCount(); }
-HLE64(kDll, _Thrd_yield, kCdecl) {
+HLE64_ONLY(kDll, _Thrd_id, kCdecl) { return CurrentThread()->tid; }
+HLE64_ONLY(kDll, _Thrd_hardware_concurrency, kCdecl) { return GuestProcessorCount(); }
+HLE64_ONLY(kDll, _Thrd_yield, kCdecl) {
   GuestSyncPoint sync;
   sched_yield();
   return 0;
@@ -249,18 +249,18 @@ HLE64(kDll, _Thrd_yield, kCdecl) {
 // _Thrd_join(_Thrd_t, int* result) and _Thrd_detach(_Thrd_t): the 16-byte
 // _Thrd_t {HANDLE _Hnd; _Thrd_id_t _Id;} comes by reference (Win64 passes
 // larger aggregates as a pointer to a copy). Both close the handle.
-HLE64(kDll, _Thrd_join, kCdecl) {
+HLE64_ONLY(kDll, _Thrd_join, kCdecl) {
   uint32_t h = uint32_t(Rd64(Arg(c, 0))), code;
   if (!JoinThread(h, &code)) return kError;
   CloseHandleValue(h);
   if (Arg(c, 1)) Wr32(Arg(c, 1), code);
   return kSuccess;
 }
-HLE64(kDll, _Thrd_detach, kCdecl) {
+HLE64_ONLY(kDll, _Thrd_detach, kCdecl) {
   return CloseHandleValue(uint32_t(Rd64(Arg(c, 0)))) ? kSuccess : kError;
 }
 // Sleeps until the absolute xtime.
-HLE64(kDll, _Thrd_sleep, kCdecl) {
+HLE64_ONLY(kDll, _Thrd_sleep, kCdecl) {
   GuestSyncPoint sync;
   std::this_thread::sleep_until(XtimeAt(Arg(c, 0)));
   return 0;
@@ -276,14 +276,14 @@ std::recursive_mutex& GlobalLock(uint32_t kind) {
 }
 }  // namespace
 
-HLE_NAMED_X(kDll, "??0_Lockit@std@@QEAA@H@Z", LockitCtor, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "??0_Lockit@std@@QEAA@H@Z", LockitCtor, kCdecl) {
   GuestSyncPoint sync;
   uint32_t kind = uint32_t(Arg(c, 1));
   Wr32(Arg(c, 0), kind);
   GlobalLock(kind).lock();
   return Arg(c, 0);
 }
-HLE_NAMED_X(kDll, "??1_Lockit@std@@QEAA@XZ", LockitDtor, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "??1_Lockit@std@@QEAA@XZ", LockitDtor, kCdecl) {
   GuestSyncPoint sync;
   GlobalLock(Rd32(Arg(c, 0))).unlock();
   return 0;
@@ -291,15 +291,15 @@ HLE_NAMED_X(kDll, "??1_Lockit@std@@QEAA@XZ", LockitDtor, kCdecl, true) {
 
 // ---- clocks and randomness -------------------------------------------------------
 
-HLE64(kDll, _Query_perf_counter, kCdecl) { return PerfCounter(); }
-HLE64(kDll, _Query_perf_frequency, kCdecl) { return 10000000; }
+HLE64_ONLY(kDll, _Query_perf_counter, kCdecl) { return PerfCounter(); }
+HLE64_ONLY(kDll, _Query_perf_frequency, kCdecl) { return 10000000; }
 // 100 ns ticks since 1970 (the system clock).
-HLE64(kDll, _Xtime_get_ticks, kCdecl) {
+HLE64_ONLY(kDll, _Xtime_get_ticks, kCdecl) {
   using namespace std::chrono;
   return uint64_t(duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count() /
                   100);
 }
-HLE_NAMED_X(kDll, "?_Random_device@std@@YAIXZ", RandomDevice, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "?_Random_device@std@@YAIXZ", RandomDevice, kCdecl) {
   static std::random_device rd;
   static std::mutex mu;
   std::lock_guard<std::mutex> l(mu);
@@ -310,29 +310,29 @@ HLE_NAMED_X(kDll, "?_Random_device@std@@YAIXZ", RandomDevice, kCdecl, true) {
 // These throw std:: exceptions; until guest C++ exceptions are raised from
 // the HLE (ARCHITECTURE.md, "64-bit guests"), they stop with the message.
 
-HLE_NAMED_X(kDll, "?_Xbad_alloc@std@@YAXXZ", XbadAlloc, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "?_Xbad_alloc@std@@YAXXZ", XbadAlloc, kCdecl) {
   FatalF("guest C++: std::bad_alloc");
 }
-HLE_NAMED_X(kDll, "?_Xbad_function_call@std@@YAXXZ", XbadFunctionCall, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "?_Xbad_function_call@std@@YAXXZ", XbadFunctionCall, kCdecl) {
   FatalF("guest C++: std::bad_function_call");
 }
-HLE_NAMED_X(kDll, "?_Xinvalid_argument@std@@YAXPEBD@Z", XinvalidArgument, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "?_Xinvalid_argument@std@@YAXPEBD@Z", XinvalidArgument, kCdecl) {
   FatalF("guest C++: std::invalid_argument(%s)", GStr(Arg(c, 0)).c_str());
 }
-HLE_NAMED_X(kDll, "?_Xlength_error@std@@YAXPEBD@Z", XlengthError, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "?_Xlength_error@std@@YAXPEBD@Z", XlengthError, kCdecl) {
   FatalF("guest C++: std::length_error(%s)", GStr(Arg(c, 0)).c_str());
 }
-HLE_NAMED_X(kDll, "?_Xout_of_range@std@@YAXPEBD@Z", XoutOfRange, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "?_Xout_of_range@std@@YAXPEBD@Z", XoutOfRange, kCdecl) {
   FatalF("guest C++: std::out_of_range(%s)", GStr(Arg(c, 0)).c_str());
 }
-HLE_NAMED_X(kDll, "?_Throw_C_error@std@@YAXH@Z", ThrowCError, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "?_Throw_C_error@std@@YAXH@Z", ThrowCError, kCdecl) {
   FatalF("guest C++: std::system_error from C error %d", int32_t(Arg(c, 0)));
 }
-HLE_NAMED_X(kDll, "?_Throw_Cpp_error@std@@YAXH@Z", ThrowCppError, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "?_Throw_Cpp_error@std@@YAXH@Z", ThrowCppError, kCdecl) {
   FatalF("guest C++: std::system_error (code %d)", int32_t(Arg(c, 0)));
 }
 // No guest exception is ever in flight yet.
-HLE_NAMED_X(kDll, "?uncaught_exception@std@@YA_NXZ", UncaughtException, kCdecl, true) {
+HLE_NAMED_X64_ONLY(kDll, "?uncaught_exception@std@@YA_NXZ", UncaughtException, kCdecl) {
   return 0;
 }
 

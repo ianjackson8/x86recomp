@@ -19,10 +19,10 @@
 #include <string>
 
 #include "runtime/hle/hle.h"
+#include "runtime/hle/undname.h"
 #include "runtime/log.h"
 
 namespace recomp::hle {
-namespace {
 
 std::string UndnameMsvc(const std::string& mangled, uint32_t flags) {
   int flags_llvm = llvm::MSDF_None;
@@ -100,6 +100,22 @@ std::string UndnameMsvc(const std::string& mangled, uint32_t flags) {
   }
   return r;
 }
+
+// LLVM prints an RTTI type descriptor name as "<type> `RTTI Type Descriptor
+// Name'"; type_info::name() is the type alone, with undname's formatting
+// (template lists "a,b", closers "> >").
+std::string UndnameTypeName(const std::string& decorated) {
+  std::string s = UndnameMsvc(decorated, 0);
+  static const std::string kSuffix = " `RTTI Type Descriptor Name'";
+  if (s.size() <= kSuffix.size() ||
+      s.compare(s.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0)
+    return {};
+  s.resize(s.size() - kSuffix.size());
+  while (!s.empty() && s.back() == ' ') s.pop_back();
+  return s;
+}
+
+namespace {
 
 // UnDecorateSymbolName(name, out, maxlen, flags) -> length or 0.
 HLE("dbghelp.dll", UnDecorateSymbolName, 4) {

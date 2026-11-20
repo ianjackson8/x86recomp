@@ -385,7 +385,8 @@ add_library(recomp_ucrt SHARED src/runtime/hle/ucrt.cpp src/runtime/hle/ucrt_std
             src/runtime/hle/ucrt_time.cpp
             src/runtime/hle/vcruntime.cpp src/runtime/hle/vcruntime_eh.cpp
             src/runtime/hle/msvcp140.cpp)
-target_link_libraries(recomp_ucrt PUBLIC recomp_runtime PRIVATE coremath)
+# (recomp_dbghelp: type_info::name() undecorates with undname.h.)
+target_link_libraries(recomp_ucrt PUBLIC recomp_runtime PRIVATE coremath recomp_dbghelp)
 
 # Store and online service SDKs (GOG Galaxy, ...), answering as offline.
 add_library(recomp_online SHARED src/runtime/hle/galaxy64.cpp)

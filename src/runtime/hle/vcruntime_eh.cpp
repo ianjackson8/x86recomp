@@ -255,7 +255,7 @@ gaddr CurrentSlots() {
 
 // _CxxThrowException(object, throw_info): RaiseException(0xE06D7363,
 // noncontinuable, {magic, object, throw_info, the throw_info's image}).
-HLE64("vcruntime140.dll", _CxxThrowException, kCdecl) {
+HLE64_ONLY("vcruntime140.dll", _CxxThrowException, kCdecl) {
   gaddr obj = Arg(c, 0), ti = Arg(c, 1);
   if (!obj && !ti) FatalF("guest C++: rethrow (throw;): not supported yet");
   const PeImage* img = ImageAt(ti);
@@ -264,11 +264,15 @@ HLE64("vcruntime140.dll", _CxxThrowException, kCdecl) {
   FatalF("guest C++ exception continued");
 }
 
+// The current exception's record and context pointers (guest pointer
+// size each); null outside a catch block.
 HLE64("vcruntime140.dll", __current_exception, kCdecl) { return CurrentSlots(); }
-HLE64("vcruntime140.dll", __current_exception_context, kCdecl) { return CurrentSlots() + 8; }
+HLE64("vcruntime140.dll", __current_exception_context, kCdecl) {
+  return CurrentSlots() + (g_proc->x64 ? 8 : 4);
+}
 
 // __CxxFrameHandler4(record, frame, context, dispatcher_context)
-HLE64("vcruntime140_1.dll", __CxxFrameHandler4, kCdecl) {
+HLE64_ONLY("vcruntime140_1.dll", __CxxFrameHandler4, kCdecl) {
   gaddr rec = Arg(c, 0), frame = Arg(c, 1), dc = Arg(c, 3);
   const gaddr image = Rd64(dc + seh64::kDcImageBase);
   const gaddr seg_begin = image + Rd32(Rd64(dc + seh64::kDcFunctionEntry));
@@ -356,7 +360,7 @@ HLE64("vcruntime140_1.dll", __CxxFrameHandler4, kCdecl) {
 // with a target is __try/__except (handler: the filter, or 1 for
 // EXCEPTION_EXECUTE_HANDLER); without one, __try/__finally (handler: the
 // termination handler, run while unwinding).
-HLE64("vcruntime140.dll", __C_specific_handler, kCdecl) {
+HLE64_ONLY("vcruntime140.dll", __C_specific_handler, kCdecl) {
   gaddr rec = Arg(c, 0), frame = Arg(c, 1), ctx = Arg(c, 2), dc = Arg(c, 3);
   const gaddr image = Rd64(dc + seh64::kDcImageBase);
   const gaddr pc = Rd64(dc + seh64::kDcControlPc);
