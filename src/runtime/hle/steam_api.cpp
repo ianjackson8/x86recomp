@@ -213,10 +213,6 @@ void SetGuestRegistered(uint32_t guest, bool on, int id) {
   if (on) Wr32(guest + 8, uint32_t(id));
 }
 
-uint64_t Arg64(const Ctx& c, int slot) {
-  return (Arg(c, slot) & 0xFFFFFFFFu) | (Arg(c, slot + 1) << 32);
-}
-
 }  // namespace
 
 // ---- the flat API (cdecl) ----------------------------------------------------------
@@ -314,7 +310,7 @@ HLE("steam_api.dll", SteamAPI_UnregisterCallback, kCdecl) {
 // (pCallback, SteamAPICall_t): the call handle takes two stack slots.
 HLE("steam_api.dll", SteamAPI_RegisterCallResult, kCdecl) {
   const uint32_t guest = Arg(c, 0);
-  const uint64_t call = Arg64(c, 1);
+  const uint64_t call = Arg64(c, 1, 1);
   const int id = int(Rd32(guest + 8));
   auto proxy = std::make_unique<Proxy>(guest, id, false);
   SteamAPI_RegisterCallResult(proxy.get(), call);
@@ -325,7 +321,7 @@ HLE("steam_api.dll", SteamAPI_RegisterCallResult, kCdecl) {
 
 HLE("steam_api.dll", SteamAPI_UnregisterCallResult, kCdecl) {
   const uint32_t guest = Arg(c, 0);
-  const uint64_t call = Arg64(c, 1);
+  const uint64_t call = Arg64(c, 1, 1);
   std::unique_ptr<Proxy> proxy;
   {
     std::lock_guard<std::mutex> l(g_mu);
@@ -340,5 +336,196 @@ HLE("steam_api.dll", SteamAPI_UnregisterCallResult, kCdecl) {
 
 HLE("steam_api.dll", SteamAPI_WriteMiniDump, kCdecl) { return 0; }
 HLE("steam_api.dll", SteamAPI_SetMiniDumpComment, kCdecl) { return 0; }
+
+// ---- interface methods (thiscall: this in ecx; nargs counts stack slots) -----------
+
+namespace {
+// A string the Steam client returns, copied into guest memory once (the
+// client keeps such strings alive; so does this cache).
+gaddr GuestString(const char* s) {
+  static std::mutex mu;
+  static std::unordered_map<std::string, gaddr> cache;
+  if (!s) return 0;
+  std::lock_guard<std::mutex> l(mu);
+  gaddr& g = cache[s];
+  if (!g) {
+    g = HeapAllocProcess(std::strlen(s) + 1, false);
+    PutStr(g, s);
+  }
+  return g;
+}
+// A CSteamID result: MSVC returns a class through a hidden buffer, the
+// first stack argument, and returns that pointer.
+uint64_t RetSteamID(const Ctx& c, CSteamID id) {
+  Wr64(Arg(c, 0), id.ConvertToUint64());
+  return Arg(c, 0);
+}
+}  // namespace
+
+HLE_NAMED("steam_api.dll", "ISteamUser::GetHSteamUser", ISteamUser_GetHSteamUser, 0) {
+  return uint32_t(Self<ISteamUser>(c)->GetHSteamUser());
+}
+HLE_NAMED("steam_api.dll", "ISteamUser::BLoggedOn", ISteamUser_BLoggedOn, 0) {
+  return Self<ISteamUser>(c)->BLoggedOn() ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUser::GetSteamID", ISteamUser_GetSteamID, 1) {
+  return RetSteamID(c, Self<ISteamUser>(c)->GetSteamID());
+}
+
+HLE_NAMED("steam_api.dll", "ISteamApps::BIsSubscribed", ISteamApps_BIsSubscribed, 0) {
+  return Self<ISteamApps>(c)->BIsSubscribed() ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamApps::BIsSubscribedApp", ISteamApps_BIsSubscribedApp, 1) {
+  return Self<ISteamApps>(c)->BIsSubscribedApp(AppId_t(Arg(c, 0))) ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamApps::BIsDlcInstalled", ISteamApps_BIsDlcInstalled, 1) {
+  return Self<ISteamApps>(c)->BIsDlcInstalled(AppId_t(Arg(c, 0))) ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamApps::GetCurrentGameLanguage",
+          ISteamApps_GetCurrentGameLanguage, 0) {
+  return GuestString(Self<ISteamApps>(c)->GetCurrentGameLanguage());
+}
+HLE_NAMED("steam_api.dll", "ISteamApps::GetAvailableGameLanguages",
+          ISteamApps_GetAvailableGameLanguages, 0) {
+  return GuestString(Self<ISteamApps>(c)->GetAvailableGameLanguages());
+}
+HLE_NAMED("steam_api.dll", "ISteamApps::GetDLCCount", ISteamApps_GetDLCCount, 0) {
+  return uint32_t(Self<ISteamApps>(c)->GetDLCCount());
+}
+// BGetDLCDataByIndex(i, &app, &available, name, name_size)
+HLE_NAMED("steam_api.dll", "ISteamApps::BGetDLCDataByIndex", ISteamApps_BGetDLCDataByIndex, 5) {
+  AppId_t app = 0;
+  bool available = false;
+  const int size = int(Arg(c, 4));
+  std::string name(size > 0 ? size_t(size) : 0, '\0');
+  const bool ok = Self<ISteamApps>(c)->BGetDLCDataByIndex(int(Arg(c, 0)), &app, &available,
+                                                          size > 0 ? name.data() : nullptr, size);
+  if (Arg(c, 1)) Wr32(Arg(c, 1), app);
+  if (Arg(c, 2)) Wr8(Arg(c, 2), available ? 1 : 0);
+  if (Arg(c, 3) && size > 0) std::memcpy(GPtr(Arg(c, 3)), name.data(), size_t(size));
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamApps::GetAppBuildId", ISteamApps_GetAppBuildId, 0) {
+  return uint32_t(Self<ISteamApps>(c)->GetAppBuildId());
+}
+
+// SetWarningMessageHook(fn): the client may call the hook inside any API
+// call, on any thread, so the guest's (cdecl (int severity, const char*))
+// is recorded, not called; a native hook prints the client's warnings,
+// which is what a game's hook does with them.
+namespace {
+gaddr g_warning_hook = 0;
+void __cdecl PrintSteamWarning(int severity, const char* text) {
+  std::fprintf(stderr, "steam %s: %s", severity ? "warning" : "message", text ? text : "");
+}
+}  // namespace
+HLE_NAMED("steam_api.dll", "ISteamClient::SetWarningMessageHook",
+          ISteamClient_SetWarningMessageHook, 1) {
+  g_warning_hook = Arg(c, 0);
+  Self<ISteamClient>(c)->SetWarningMessageHook(&PrintSteamWarning);
+  return 0;
+}
+
+HLE_NAMED("steam_api.dll", "ISteamUtils::SetOverlayNotificationPosition",
+          ISteamUtils_SetOverlayNotificationPosition, 1) {
+  Self<ISteamUtils>(c)->SetOverlayNotificationPosition(ENotificationPosition(Arg(c, 0)));
+  return 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUtils::SetOverlayNotificationInset",
+          ISteamUtils_SetOverlayNotificationInset, 2) {
+  Self<ISteamUtils>(c)->SetOverlayNotificationInset(int(Arg(c, 0)), int(Arg(c, 1)));
+  return 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUtils::GetSteamUILanguage", ISteamUtils_GetSteamUILanguage, 0) {
+  return GuestString(Self<ISteamUtils>(c)->GetSteamUILanguage());
+}
+HLE_NAMED("steam_api.dll", "ISteamUtils::IsSteamInBigPictureMode",
+          ISteamUtils_IsSteamInBigPictureMode, 0) {
+  return Self<ISteamUtils>(c)->IsSteamInBigPictureMode() ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUtils::IsSteamRunningInVR", ISteamUtils_IsSteamRunningInVR, 0) {
+  return Self<ISteamUtils>(c)->IsSteamRunningInVR() ? 1 : 0;
+}
+
+HLE_NAMED("steam_api.dll", "ISteamFriends::GetPersonaName", ISteamFriends_GetPersonaName, 0) {
+  return GuestString(Self<ISteamFriends>(c)->GetPersonaName());
+}
+HLE_NAMED("steam_api.dll", "ISteamFriends::SetRichPresence", ISteamFriends_SetRichPresence, 2) {
+  const std::string key = GStr(Arg(c, 0));
+  const std::string value = Arg(c, 1) ? GStr(Arg(c, 1)) : std::string();
+  return Self<ISteamFriends>(c)->SetRichPresence(key.c_str(), Arg(c, 1) ? value.c_str() : nullptr)
+             ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamFriends::ClearRichPresence", ISteamFriends_ClearRichPresence, 0) {
+  Self<ISteamFriends>(c)->ClearRichPresence();
+  return 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamFriends::ActivateGameOverlay", ISteamFriends_ActivateGameOverlay, 1) {
+  const std::string dialog = Arg(c, 0) ? GStr(Arg(c, 0)) : std::string();
+  Self<ISteamFriends>(c)->ActivateGameOverlay(dialog.c_str());
+  return 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamFriends::ActivateGameOverlayToWebPage",
+          ISteamFriends_ActivateGameOverlayToWebPage, 2) {
+  const std::string url = GStr(Arg(c, 0));
+  Self<ISteamFriends>(c)->ActivateGameOverlayToWebPage(
+      url.c_str(), EActivateGameOverlayToWebPageMode(Arg(c, 1)));
+  return 0;
+}
+
+HLE_NAMED("steam_api.dll", "ISteamUserStats::RequestCurrentStats",
+          ISteamUserStats_RequestCurrentStats, 0) {
+  return Self<ISteamUserStats>(c)->RequestCurrentStats() ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::StoreStats", ISteamUserStats_StoreStats, 0) {
+  return Self<ISteamUserStats>(c)->StoreStats() ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetStat(const char *pchName, int32 *pData)",
+          ISteamUserStats_GetStatInt, 2) {
+  int32 v = 0;
+  const bool ok = Self<ISteamUserStats>(c)->GetStat(GStr(Arg(c, 0)).c_str(), &v);
+  if (ok && Arg(c, 1)) Wr32(Arg(c, 1), uint32_t(v));
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetStat(const char *pchName, float *pData)",
+          ISteamUserStats_GetStatFloat, 2) {
+  float v = 0;
+  const bool ok = Self<ISteamUserStats>(c)->GetStat(GStr(Arg(c, 0)).c_str(), &v);
+  if (ok && Arg(c, 1)) {
+    uint32_t b;
+    std::memcpy(&b, &v, 4);
+    Wr32(Arg(c, 1), b);
+  }
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::SetStat(const char *pchName, int32 nData)",
+          ISteamUserStats_SetStatInt, 2) {
+  return Self<ISteamUserStats>(c)->SetStat(GStr(Arg(c, 0)).c_str(), int32(Arg(c, 1))) ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::SetStat(const char *pchName, float fData)",
+          ISteamUserStats_SetStatFloat, 2) {
+  return Self<ISteamUserStats>(c)->SetStat(GStr(Arg(c, 0)).c_str(), ArgF(c, 1)) ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetAchievement", ISteamUserStats_GetAchievement, 2) {
+  bool v = false;
+  const bool ok = Self<ISteamUserStats>(c)->GetAchievement(GStr(Arg(c, 0)).c_str(), &v);
+  if (ok && Arg(c, 1)) Wr8(Arg(c, 1), v ? 1 : 0);
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::SetAchievement", ISteamUserStats_SetAchievement, 1) {
+  return Self<ISteamUserStats>(c)->SetAchievement(GStr(Arg(c, 0)).c_str()) ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::IndicateAchievementProgress",
+          ISteamUserStats_IndicateAchievementProgress, 3) {
+  return Self<ISteamUserStats>(c)->IndicateAchievementProgress(
+             GStr(Arg(c, 0)).c_str(), uint32(Arg(c, 1)), uint32(Arg(c, 2))) ? 1 : 0;
+}
+
+HLE_NAMED("steam_api.dll", "ISteamUtils::GetAppID", ISteamUtils_GetAppID, 0) {
+  return Self<ISteamUtils>(c)->GetAppID();
+}
+HLE_NAMED("steam_api.dll", "ISteamUtils::IsOverlayEnabled", ISteamUtils_IsOverlayEnabled, 0) {
+  return Self<ISteamUtils>(c)->IsOverlayEnabled() ? 1 : 0;
+}
 
 }  // namespace recomp::hle
