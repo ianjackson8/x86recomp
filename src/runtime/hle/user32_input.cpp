@@ -2,6 +2,8 @@
 // message boxes and wsprintfA. Window management and the message loop are in
 // user32_window.cpp.
 
+#include <fstream>
+#include <iterator>
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -12,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "runtime/hle/bmp.h"
+#include "runtime/hle/gdi_objects.h"
 #include "runtime/hle/hle.h"
 #include "runtime/hle/input_state.h"
 #include "runtime/hle/kernel32_state.h"
@@ -419,6 +423,15 @@ HLE("user32.dll", LoadImageA, 6) {
     if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
       SetLastError(2);  // ERROR_FILE_NOT_FOUND
       return 0;
+    }
+    if (type == 0) {  // IMAGE_BITMAP: read, as a GDI bitmap (gdi_objects.h)
+      std::ifstream in(path, std::ios::binary);
+      std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      bmp::Image im;
+      std::string why;
+      if (!bmp::Decode(bytes, &im, &why))
+        FatalF("LoadImageA(%s): %s is not supported yet", GStr(name).c_str(), why.c_str());
+      return NewGdiBitmap({im.width, im.height, std::move(im.bgra)});
     }
     return next += 0x10;
   }

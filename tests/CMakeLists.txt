@@ -447,3 +447,9 @@ add_executable(crypt_test crypt_test.cpp)
 target_include_directories(crypt_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_features(crypt_test PRIVATE cxx_std_20)
 add_test(NAME crypt COMMAND crypt_test)
+
+# bmp_test: .bmp decoding for LoadImage (runtime/hle/bmp.h); portable.
+add_executable(bmp_test bmp_test.cpp)
+target_include_directories(bmp_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_compile_features(bmp_test PRIVATE cxx_std_20)
+add_test(NAME bmp COMMAND bmp_test)

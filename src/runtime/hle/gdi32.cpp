@@ -3,9 +3,14 @@
 // succeed without output. If the game turns out to render glyphs through
 // GDI (TextOutW/GetDIBits suggest IME text), real rasterisation goes here.
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <map>
+#include <memory>
+#include <mutex>
 
+#include "runtime/hle/gdi_objects.h"
 #include "runtime/hle/hle.h"
 #include "runtime/hle/input_state.h"
 #include "runtime/log.h"
@@ -24,7 +29,37 @@ HLE("gdi32.dll", CreateHatchBrush, 2) { return NewGdi(); }
 HLE("gdi32.dll", CreateSolidBrush, 1) { return NewGdi(); }
 HLE("gdi32.dll", CreateCompatibleDC, 1) { return NewGdi(); }
 HLE("gdi32.dll", CreateCompatibleBitmap, 3) { return NewGdi(); }
-HLE("gdi32.dll", DeleteObject, 1) { return 1; }
+std::mutex g_bitmaps_mu;
+std::map<uint32_t, std::shared_ptr<const GdiBitmap>> g_bitmaps;
+
+HLE("gdi32.dll", DeleteObject, 1) {
+  std::lock_guard<std::mutex> l(g_bitmaps_mu);
+  g_bitmaps.erase(uint32_t(Arg(c, 0)));
+  return 1;
+}
+
+// GetObjectA(h, size, buf): a bitmap's BITMAP {bmType, bmWidth, bmHeight,
+// bmWidthBytes, bmPlanes, bmBitsPixel, bmBits} (bmBits NULL: a
+// device-dependent bitmap); at most `size` bytes; NULL buf gives the size.
+// Other objects are not modelled yet: fatal, named.
+HLE("gdi32.dll", GetObjectA, 3) {
+  const uint32_t h = uint32_t(Arg(c, 0));
+  const gaddr buf = Arg(c, 2);
+  const int size = int(Arg(c, 1));
+  auto b = FindGdiBitmap(h);
+  if (!b) FatalF("GetObjectA(%08X): not a bitmap; other GDI objects are not modelled yet", h);
+  const uint32_t ptr = g_proc->x64 ? 8 : 4, total = 20 + (g_proc->x64 ? 4 : 0) + ptr;
+  if (!buf) return total;
+  uint8_t bm[32] = {};
+  const int32_t f[4] = {0, b->width, b->height, b->width * 4};
+  std::memcpy(bm, f, 16);
+  const uint16_t planes = 1, bits = 32;
+  std::memcpy(bm + 16, &planes, 2);
+  std::memcpy(bm + 18, &bits, 2);
+  const uint32_t n = std::min<uint32_t>(uint32_t(std::max(size, 0)), total);
+  std::memcpy(GPtr(buf), bm, n);
+  return n;
+}
 HLE("gdi32.dll", DeleteDC, 1) { return 1; }
 HLE("gdi32.dll", SelectObject, 2) { return 0x00E00000u; }
 
@@ -87,4 +122,17 @@ HLE("gdi32.dll", GetDIBits, 7) {
 }
 
 }  // namespace
+
+uint32_t NewGdiBitmap(GdiBitmap b) {
+  const uint32_t h = NewGdi();
+  std::lock_guard<std::mutex> l(g_bitmaps_mu);
+  g_bitmaps[h] = std::make_shared<const GdiBitmap>(std::move(b));
+  return h;
+}
+std::shared_ptr<const GdiBitmap> FindGdiBitmap(uint32_t h) {
+  std::lock_guard<std::mutex> l(g_bitmaps_mu);
+  auto it = g_bitmaps.find(h);
+  return it == g_bitmaps.end() ? nullptr : it->second;
+}
+
 }  // namespace recomp::hle
