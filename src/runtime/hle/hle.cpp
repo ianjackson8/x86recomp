@@ -118,8 +118,8 @@ gaddr DataAddress(const std::string& dll, const std::string& name) {
 
 }  // namespace
 
-Registrar::Registrar(const char* dll, const char* name, int nargs, Fn fn, bool x64) {
-  Registry()[{dll, name}] = Def{nargs, fn, x64};
+Registrar::Registrar(const char* dll, const char* name, int nargs, Fn fn, bool x64, bool x86) {
+  Registry()[{dll, name}] = Def{nargs, fn, x64, x86};
 }
 
 DataExport::DataExport(const char* dll, const char* name, uint32_t size, void (*init)(gaddr)) {
@@ -186,6 +186,10 @@ void CallThunk(Ctx& c, gaddr thunk) {
   if (x64 && !s->def->x64)
     FatalF("import %s!%s called from x64 code: its handler is not audited for "
            "x64 guests (HLE64) (return address %08llX)",
+           s->dll.c_str(), s->name.c_str(), ret);
+  if (!x64 && !s->def->x86)
+    FatalF("import %s!%s called from 32-bit code: its handler is audited for x64 "
+           "guests only (HLE64_ONLY) (return address %08llX)",
            s->dll.c_str(), s->name.c_str(), ret);
   const Def& d = *s->def;
   // <ID>_TRACE_FILTER=mss32 (substring of "dll!name") narrows the trace.

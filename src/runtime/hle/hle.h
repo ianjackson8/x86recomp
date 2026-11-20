@@ -45,10 +45,12 @@ struct Def {
   int nargs;
   Fn fn;
   bool x64;  // audited for x64 guests (HLE64)
+  bool x86 = true;  // audited for 32-bit guests (all but HLE64_ONLY)
 };
 
 struct Registrar {
-  Registrar(const char* dll, const char* name, int nargs, Fn fn, bool x64 = false);
+  Registrar(const char* dll, const char* name, int nargs, Fn fn, bool x64 = false,
+            bool x86 = true);
 };
 
 // A data export of a DLL we provide (a C++ static member, a global the
@@ -97,9 +99,16 @@ inline uint64_t HandleRet(uint32_t h) {
 // Win64 floating-point arguments and results: argument i of a float or
 // double type is in xmm<i> (i < 4; later ones on the stack like integers),
 // and the result goes to xmm0.
+// Floating-point arguments and results. x64: arguments 0-3 in xmm0-3, the
+// rest on the stack; the result in xmm0. 32-bit guests (cdecl/stdcall): i
+// is the 4-byte stack slot where the argument starts (a double takes two),
+// and the result goes on the x87 stack as FLD m64/m32 would load it, exact.
 inline double ArgD(const Ctx& c, int i) {
   double v;
-  if (i < 4) std::memcpy(&v, c.xmm[i].data(), 8);
+  if (!g_proc->x64) {
+    uint64_t b = (Arg(c, i) & 0xFFFFFFFFu) | (Arg(c, i + 1) << 32);
+    std::memcpy(&v, &b, 8);
+  } else if (i < 4) std::memcpy(&v, c.xmm[i].data(), 8);
   else {
     uint64_t b = Arg(c, i);
     std::memcpy(&v, &b, 8);
@@ -108,7 +117,10 @@ inline double ArgD(const Ctx& c, int i) {
 }
 inline float ArgF(const Ctx& c, int i) {
   float v;
-  if (i < 4) std::memcpy(&v, c.xmm[i].data(), 4);
+  if (!g_proc->x64) {
+    uint32_t b = uint32_t(Arg(c, i));
+    std::memcpy(&v, &b, 4);
+  } else if (i < 4) std::memcpy(&v, c.xmm[i].data(), 4);
   else {
     uint32_t b = uint32_t(Arg(c, i));
     std::memcpy(&v, &b, 4);
@@ -117,10 +129,22 @@ inline float ArgF(const Ctx& c, int i) {
 }
 // Returns from a handler with a double (float) result in xmm0.
 inline uint64_t RetD(Ctx& c, double v) {
+  if (!g_proc->x64) {
+    uint64_t b;
+    std::memcpy(&b, &v, 8);
+    x87::LoadF64(c.fpu, b);
+    return 0;
+  }
   std::memcpy(c.xmm[0].data(), &v, 8);
   return 0;
 }
 inline uint64_t RetF(Ctx& c, float v) {
+  if (!g_proc->x64) {
+    uint32_t b;
+    std::memcpy(&b, &v, 4);
+    x87::LoadF32(c.fpu, b);
+    return 0;
+  }
   std::memcpy(c.xmm[0].data(), &v, 4);
   return 0;
 }
@@ -177,12 +201,20 @@ bool EnsureReadable(Ctx& c, gaddr va, uint64_t len);
 #define HLE(dll, name, nargs) HLE_NAMED(dll, #name, name, nargs)
 // HLE64(dll, Name, nargs): the same, audited for x64 guests too.
 #define HLE64(dll, name, nargs) HLE_NAMED_X(dll, #name, name, nargs, true)
+// HLE64_ONLY(dll, Name, nargs): audited for x64 guests only (e.g. it reads
+// and writes guest pointers as 8 bytes); a 32-bit guest calling it is a
+// fatal error naming it, like an unhandled import.
+#define HLE64_ONLY(dll, name, nargs) HLE_NAMED_X64_ONLY(dll, #name, name, nargs)
 
 // HLE_NAMED(dll, "export@8", ident, nargs) for decorated export names.
 #define HLE_NAMED(dll, export_name, ident, nargs) \
   HLE_NAMED_X(dll, export_name, ident, nargs, false)
-#define HLE_NAMED_X(dll, export_name, ident, nargs, x64)                   \
+#define HLE_NAMED_X(dll, export_name, ident, nargs, x64) \
+  HLE_NAMED_XA(dll, export_name, ident, nargs, x64, true)
+#define HLE_NAMED_X64_ONLY(dll, export_name, ident, nargs) \
+  HLE_NAMED_XA(dll, export_name, ident, nargs, true, false)
+#define HLE_NAMED_XA(dll, export_name, ident, nargs, x64, x86)               \
   static uint64_t RECOMP_HLE_CAT(hle_, ident)(::recomp::Ctx & c);              \
   static ::recomp::hle::Registrar RECOMP_HLE_CAT(reg_, ident){                 \
-      dll, export_name, nargs, &RECOMP_HLE_CAT(hle_, ident), x64};          \
+      dll, export_name, nargs, &RECOMP_HLE_CAT(hle_, ident), x64, x86};     \
   static uint64_t RECOMP_HLE_CAT(hle_, ident)([[maybe_unused]] ::recomp::Ctx & c)
