@@ -440,3 +440,10 @@ add_executable(ini_test ini_test.cpp)
 target_include_directories(ini_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_features(ini_test PRIVATE cxx_std_20)
 add_test(NAME ini COMMAND ini_test)
+
+# crypt_test: MD5 and RC4 (runtime/hle/crypt.h) against RFC 1321 and RFC
+# 6229; portable.
+add_executable(crypt_test crypt_test.cpp)
+target_include_directories(crypt_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_compile_features(crypt_test PRIVATE cxx_std_20)
+add_test(NAME crypt COMMAND crypt_test)

@@ -141,6 +141,7 @@ add_library(recomp_runtime SHARED
   src/runtime/hle/seh64.cpp
   src/runtime/hle/kernel32_misc.cpp
   src/runtime/hle/advapi32.cpp
+  src/runtime/hle/advapi32_crypt.cpp
   src/runtime/hle/user32_input.cpp
   src/runtime/hle/user32_window.cpp
   src/runtime/hle/display_modes.cpp
