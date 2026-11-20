@@ -154,6 +154,10 @@ struct GameConfig {
     uint32_t base = 0;  // the lifter's --base for it; 0 = preferred base
   };
   std::vector<LiftedDll> lifted_dlls;
+  // The game's Steam app id, for the steam_api bridge (recomp_steam): it
+  // names the app to the Steam client when the game was not started by
+  // Steam. 0: the game has no Steam bridge.
+  uint32_t steam_app_id = 0;
 };
 
 // The running game's configuration (valid once RunProcess has started).

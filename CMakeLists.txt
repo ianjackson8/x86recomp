@@ -389,6 +389,37 @@ add_library(recomp_ucrt SHARED src/runtime/hle/ucrt.cpp src/runtime/hle/ucrt_std
 # (recomp_dbghelp: type_info::name() undecorates with undname.h.)
 target_link_libraries(recomp_ucrt PUBLIC recomp_runtime PRIVATE coremath recomp_dbghelp)
 
+# Steam: steam_api.dll bridged to Valve's native libsteam_api, so the real
+# Steam client answers (ownership, DLC, user data). Built only with a
+# Steamworks SDK whose *_INTERFACE_VERSION strings match the game's (the
+# guest's vtables are generated from its headers, tools/steam_vtables.py).
+# Nothing from the SDK enters the source tree; libsteam_api is copied next
+# to librecomp_steam, where its @loader_path install name finds it.
+set(RECOMP_STEAMWORKS_SDK "" CACHE PATH "Steamworks SDK sdk/ directory (builds recomp_steam)")
+if(RECOMP_STEAMWORKS_SDK AND NOT RECOMP_IOS)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  if(APPLE)
+    set(_steam_lib "${RECOMP_STEAMWORKS_SDK}/redistributable_bin/osx/libsteam_api.dylib")
+  else()
+    set(_steam_lib "${RECOMP_STEAMWORKS_SDK}/redistributable_bin/linux64/libsteam_api.so")
+  endif()
+  if(NOT EXISTS "${_steam_lib}")
+    message(FATAL_ERROR "RECOMP_STEAMWORKS_SDK: no ${_steam_lib}")
+  endif()
+  set(_steam_inc "${CMAKE_CURRENT_BINARY_DIR}/steam_vtables.inc")
+  add_custom_command(OUTPUT "${_steam_inc}"
+    COMMAND ${Python3_EXECUTABLE} -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/steam_vtables.py"
+            "${RECOMP_STEAMWORKS_SDK}/public/steam" "${_steam_inc}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/steam_vtables.py"
+    COMMENT "Steam interface vtables from the Steamworks SDK headers")
+  add_library(recomp_steam SHARED src/runtime/hle/steam_api.cpp "${_steam_inc}")
+  target_include_directories(recomp_steam PRIVATE "${RECOMP_STEAMWORKS_SDK}/public"
+                             "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(recomp_steam PRIVATE recomp_runtime "${_steam_lib}")
+  add_custom_command(TARGET recomp_steam POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_steam_lib}" "$<TARGET_FILE_DIR:recomp_steam>")
+endif()
+
 # Store and online service SDKs (GOG Galaxy, ...), answering as offline.
 add_library(recomp_online SHARED src/runtime/hle/galaxy64.cpp)
 target_link_libraries(recomp_online PUBLIC recomp_runtime)
