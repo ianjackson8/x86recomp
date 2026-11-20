@@ -356,9 +356,16 @@ HLE64("ucrtbase.dll", free, kCdecl) {
   if (gaddr p = Arg(c, 0)) HeapFreeProcess(p);
   return 0;
 }
-HLE64_ONLY("ucrtbase.dll", calloc, kCdecl) {
+// The largest size_t of the guest.
+namespace {
+uint64_t SizeMax() { return g_proc->x64 ? UINT64_MAX : UINT32_MAX; }
+}  // namespace
+HLE64("ucrtbase.dll", calloc, kCdecl) {
   uint64_t n = Arg(c, 0), size = Arg(c, 1);
-  if (size && n > UINT64_MAX / size) return 0;
+  if (size && n > SizeMax() / size) {
+    SetErrno(ENOMEM);
+    return 0;
+  }
   return HeapAllocProcess(n * size ? n * size : 1, true);
 }
 HLE64("ucrtbase.dll", realloc, kCdecl) {
@@ -373,18 +380,64 @@ HLE64("ucrtbase.dll", realloc, kCdecl) {
 }
 // _aligned_malloc: the block's own address is kept in the 8 bytes below the
 // aligned pointer, as the UCRT does.
-HLE64_ONLY("ucrtbase.dll", _aligned_malloc, kCdecl) {
-  uint64_t n = Arg(c, 0), align = std::max<uint64_t>(Arg(c, 1), 8);
-  if (align & (align - 1)) return 0;
-  gaddr block = Malloc(n + align + 8);
+// _aligned_malloc(size, align): align a power of two, at least a pointer.
+// Below the aligned block, at the guest's pointer size: the requested size,
+// then the heap block it is in.
+namespace {
+gaddr AlignedMalloc(uint64_t n, uint64_t align) {
+  const uint32_t ps = PtrSize();
+  align = std::max<uint64_t>(align, ps);
+  if (align & (align - 1)) {
+    SetErrno(EINVAL);
+    return 0;
+  }
+  gaddr block = Malloc(n + align + 2 * ps);
   if (!block) return 0;
-  gaddr p = (block + 8 + align - 1) & ~(align - 1);
-  Wr64(p - 8, block);
+  gaddr p = (block + 2 * ps + align - 1) & ~(align - 1);
+  WrPtr(p - ps, block);
+  WrPtr(p - 2 * ps, n);
   return p;
 }
-HLE64_ONLY("ucrtbase.dll", _aligned_free, kCdecl) {
-  if (gaddr p = Arg(c, 0)) HeapFreeProcess(Rd64(p - 8));
+}  // namespace
+HLE64("ucrtbase.dll", _aligned_malloc, kCdecl) { return AlignedMalloc(Arg(c, 0), Arg(c, 1)); }
+HLE64("ucrtbase.dll", _aligned_free, kCdecl) {
+  if (gaddr p = Arg(c, 0)) HeapFreeProcess(RdPtr(p - PtrSize()));
   return 0;
+}
+// _aligned_realloc(p, size, align): NULL p allocates, size 0 frees.
+HLE64("ucrtbase.dll", _aligned_realloc, kCdecl) {
+  const gaddr p = Arg(c, 0);
+  const uint64_t n = Arg(c, 1);
+  if (!p) return AlignedMalloc(n, Arg(c, 2));
+  const uint32_t ps = PtrSize();
+  if (!n) {
+    HeapFreeProcess(RdPtr(p - ps));
+    return 0;
+  }
+  const gaddr q = AlignedMalloc(n, Arg(c, 2));
+  if (!q) return 0;
+  std::memcpy(GPtr(q), GPtr(p), std::min<uint64_t>(RdPtr(p - 2 * ps), n));
+  HeapFreeProcess(RdPtr(p - ps));
+  return q;
+}
+// _recalloc(p, n, size): realloc to n * size, the grown part zeroed.
+HLE64("ucrtbase.dll", _recalloc, kCdecl) {
+  const gaddr p = Arg(c, 0);
+  const uint64_t n = Arg(c, 1), size = Arg(c, 2);
+  if (size && n > SizeMax() / size) {
+    SetErrno(ENOMEM);
+    return 0;
+  }
+  const uint64_t total = n * size;
+  if (!p) return HeapAllocProcess(total ? total : 1, true);
+  const uint64_t old = HeapSizeProcess(p);
+  if (!total) {
+    HeapFreeProcess(p);
+    return 0;
+  }
+  const gaddr q = HeapReAllocProcess(p, total);
+  if (q && total > old) std::memset(GPtr(q + old), 0, total - old);
+  return q;
 }
 // No new handler is ever installed (_set_new_handler is not provided).
 HLE64("ucrtbase.dll", _callnewh, kCdecl) { return 0; }
