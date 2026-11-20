@@ -1406,6 +1406,12 @@ HLE("user32.dll", UnregisterClassA, 2) {
   return g_classes.erase(n) ? 1 : 0;
 }
 
+HLE("user32.dll", UnregisterClassW, 2) {
+  std::string n = ClassKey(Arg(c, 0), true);
+  std::lock_guard<std::recursive_mutex> l(g_mu);
+  return g_classes.erase(n) ? 1 : 0;
+}
+
 HLE("user32.dll", SetClassLongA, 3) {
   // GCL_HCURSOR (-12), GCL_HICON (-14)... cosmetic; remember nothing.
   return 0;
@@ -1886,6 +1892,21 @@ HLE("user32.dll", SetWindowTextA, 2) {
   return 1;
 }
 
+HLE("user32.dll", SetWindowTextW, 2) {
+  // Titles are kept narrow, as CreateWindowExW keeps them.
+  std::string t = win32::Narrow(GWStr(Arg(c, 1)));
+  SDL_Window* s = nullptr;
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    Window* w = Win(Arg(c, 0));
+    if (!w) return 0;
+    w->title = t;
+    s = w->sdl;
+  }
+  if (s) SDL_SetWindowTitle(s, AnsiToUtf8(t).c_str());
+  return 1;
+}
+
 HLE("user32.dll", GetWindowTextA, 3) {
   std::lock_guard<std::recursive_mutex> l(g_mu);
   Window* w = Win(Arg(c, 0));
@@ -1944,6 +1965,11 @@ HLE("user32.dll", SetWindowLongA, 3) {
   }
   return old;
 }
+
+// The W forms read and write the same window data: windows here have one
+// kind of window procedure, so GWL_WNDPROC needs no A/W translation.
+HLE("user32.dll", GetWindowLongW, 2) { return hle_GetWindowLongA(c); }
+HLE("user32.dll", SetWindowLongW, 3) { return hle_SetWindowLongA(c); }
 
 // ---- focus and activation ---------------------------------------------------------
 

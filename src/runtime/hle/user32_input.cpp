@@ -514,6 +514,18 @@ HLE("user32.dll", MessageBoxW, 4) {
 // flags -#0, width, precision, h/l/ll prefixes, c C d i u x X s S %.
 // No floating point (user32's wsprintf has none).
 
+// CharNextW(p): the next character position: one UTF-16 unit on, past any
+// combining diacritical marks (U+0300-U+036F) that belong to it; p itself
+// at the terminating NUL. (Windows goes by the Unicode nonspacing-mark
+// property; this covers the Latin marks.)
+HLE("user32.dll", CharNextW, 1) {
+  gaddr p = Arg(c, 0);
+  if (!Rd16(p)) return p;
+  p += 2;
+  while (Rd16(p) >= 0x0300 && Rd16(p) <= 0x036F) p += 2;
+  return p;
+}
+
 HLE("user32.dll", wsprintfA, kCdecl) {
   uint32_t out = Arg(c, 0);
   std::string fmt = GStr(Arg(c, 1));

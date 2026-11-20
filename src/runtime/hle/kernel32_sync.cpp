@@ -787,7 +787,9 @@ struct MappingObject : KObject {
 std::mutex g_views_mu;
 std::set<uint32_t> g_views;  // guest bases of file views
 
-HLE("kernel32.dll", CreateFileMappingA, 6) {
+// CreateFileMapping(file, attrs, protect, size_hi, size_lo, name); the A and
+// W forms differ in the name only.
+uint32_t CreateFileMapping(Ctx& c, bool wide) {
   uint32_t file = Arg(c, 0), prot = Arg(c, 2), size_hi = Arg(c, 3),
            size_lo = Arg(c, 4), name = Arg(c, 5);
   auto m = std::make_shared<MappingObject>();
@@ -815,8 +817,10 @@ HLE("kernel32.dll", CreateFileMappingA, 6) {
     g_proc->vm.Commit(base, uint32_t(m->size), Prot::RW);
     m->anon_base = base;
   }
-  return CreateNamed(NameOf(name), [&] { return m; });
+  return CreateNamed(NameOf(name, wide), [&] { return m; });
 }
+HLE("kernel32.dll", CreateFileMappingA, 6) { return CreateFileMapping(c, false); }
+HLE("kernel32.dll", CreateFileMappingW, 6) { return CreateFileMapping(c, true); }
 
 HLE("kernel32.dll", OpenFileMappingW, 3) {
   return OpenNamed(Arg(c, 2), KObject::Type::Mapping, true);

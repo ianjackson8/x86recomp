@@ -135,6 +135,7 @@ add_library(recomp_runtime SHARED
   src/runtime/hle/locale.cpp
   src/runtime/hle/winmm_timer.cpp
   src/runtime/hle/kernel32_file.cpp
+  src/runtime/hle/kernel32_profile.cpp
   src/runtime/hle/kernel32_sync.cpp
   src/runtime/hle/kernel32_seh.cpp
   src/runtime/hle/seh64.cpp

@@ -433,3 +433,10 @@ add_executable(shlwapi_path_test shlwapi_path_test.cpp)
 target_include_directories(shlwapi_path_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_features(shlwapi_path_test PRIVATE cxx_std_20)
 add_test(NAME shlwapi_path COMMAND shlwapi_path_test)
+
+# ini_test: the INI rules of the private profile functions
+# (runtime/hle/ini.h); portable.
+add_executable(ini_test ini_test.cpp)
+target_include_directories(ini_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_compile_features(ini_test PRIVATE cxx_std_20)
+add_test(NAME ini COMMAND ini_test)
