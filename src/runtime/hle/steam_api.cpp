@@ -13,10 +13,13 @@
 //
 // Callbacks: the guest's CCallbackBase objects (MSVC vtable: Run(void*,
 // bool, SteamAPICall_t), Run(void*), GetCallbackSizeBytes; flags byte at +4,
-// m_iCallback at +8) are registered with native proxies. Delivering one
-// needs the callback struct moved from the native layout (pack 4 on
-// macOS/Linux) to the guest's (pack 8): not written yet, so a delivery is
-// fatal and names the callback.
+// m_iCallback at +8) are registered with native proxies. libsteam_api packs
+// callback structs to 4 on macOS/Linux, the guest to 8: each delivery is
+// copied field by field into the guest's layout (tools/steam_callbacks.py
+// gives the guest offsets from the SDK headers; the native ones are the
+// compiler's). A struct left out there (pointer fields) is fatal, named.
+// Callbacks only run inside SteamAPI_RunCallbacks, on the guest thread
+// that called it.
 //
 // Policy, as Windows would behave for a game Steam did not launch:
 // - SteamAPI_RestartAppIfNecessary: false. It relaunches a game through
@@ -28,7 +31,9 @@
 // - SteamAPI_WriteMiniDump: nothing (a Windows minidump of a recompiled
 //   process means nothing to Steam's crash reporting).
 
+#include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <map>
 #include <memory>
@@ -39,9 +44,14 @@
 
 #include "runtime/hle/com.h"
 #include "runtime/hle/hle.h"
+#include "runtime/hle/kernel32_state.h"
 #include "runtime/log.h"
 #include "runtime/runtime.h"
 #include "steam/steam_api.h"
+// Every client interface header, as tools/steam_callbacks.py laid them out.
+#define RECOMP_STEAM_HEADERS
+#include "steam_callbacks.inc"
+#undef RECOMP_STEAM_HEADERS
 
 namespace recomp::hle {
 namespace {
@@ -114,6 +124,48 @@ T* Self(const Ctx& c) {
 
 constexpr uint8_t kCallbackRegistered = 0x01, kCallbackGameServer = 0x02;
 
+// A callback struct's fields: native offset and size, guest offset.
+struct Field {
+  uint32_t native_off, size, guest_off;
+};
+struct Layout {
+  const char* name;
+  uint32_t native_size, guest_size;
+  std::vector<Field> fields;
+};
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winvalid-offsetof"
+const std::unordered_map<int, Layout>& Layouts() {
+  static const std::unordered_map<int, Layout> m = [] {
+    std::unordered_map<int, Layout> r;
+#define F(path, goff) Field{uint32_t(offsetof(S_, path)), uint32_t(sizeof(S_::path)), goff}
+#define RECOMP_STEAM_CALLBACK(Name, gsize, ...)                                     \
+  {                                                                                 \
+    using S_ = Name;                                                                \
+    r[Name::k_iCallback] = Layout{#Name, uint32_t(sizeof(Name)), gsize, {__VA_ARGS__}}; \
+  }
+#include "steam_callbacks.inc"
+#undef RECOMP_STEAM_CALLBACK
+#undef F
+    return r;
+  }();
+  return m;
+}
+#pragma clang diagnostic pop
+
+const Layout& LayoutOf(int id) {
+  auto it = Layouts().find(id);
+  if (it == Layouts().end())
+    FatalF("steam_api: callback %d has no guest layout (not in the SDK headers, or "
+           "not translatable)", id);
+  return it->second;
+}
+
+// The guest context SteamAPI_RunCallbacks runs in: callbacks are delivered
+// inside it.
+thread_local Ctx* t_callback_ctx = nullptr;
+
 // A native stand-in for a guest CCallbackBase.
 class Proxy final : public CCallbackBase {
  public:
@@ -121,22 +173,33 @@ class Proxy final : public CCallbackBase {
     m_iCallback = id;
     m_nCallbackFlags = game_server ? kCallbackGameServer : 0;
   }
-  void Run(void*) override { Deliver(); }
-  void Run(void*, bool, SteamAPICall_t) override { Deliver(); }
-  int GetCallbackSizeBytes() override {
-    // The native size of the struct, which libsteam_api checks; it is
-    // known once the layout translation exists.
-    FatalF("steam_api: callback %d (guest %08X): size and layout translation not written yet",
-           m_iCallback, guest_);
+  // Callbacks: the guest's Run(void*), vtable slot 1.
+  void Run(void* param) override { Deliver(param, 1, false, 0); }
+  // Call results: Run(void*, bool, SteamAPICall_t), slot 0.
+  void Run(void* param, bool io_failure, SteamAPICall_t call) override {
+    Deliver(param, 0, io_failure, call);
   }
-  uint32_t guest() const { return guest_; }
+  int GetCallbackSizeBytes() override { return int(LayoutOf(m_iCallback).native_size); }
 
  private:
-  [[noreturn]] void Deliver() {
-    FatalF("steam_api: callback %d delivered to guest %08X: layout translation not written yet",
-           m_iCallback, guest_);
+  void Deliver(void* param, int slot, bool io_failure, uint64_t call) {
+    Ctx* c = t_callback_ctx;
+    if (!c)
+      FatalF("steam_api: callback %d delivered outside SteamAPI_RunCallbacks", m_iCallback);
+    const Layout& l = LayoutOf(m_iCallback);
+    if (!buf_) buf_ = HeapAllocProcess(l.guest_size, true);
+    std::memset(GPtr(buf_), 0, l.guest_size);
+    const uint8_t* src = static_cast<const uint8_t*>(param);
+    for (const Field& f : l.fields) std::memcpy(GPtr(buf_ + f.guest_off), src + f.native_off, f.size);
+    const gaddr fn = Rd32(Rd32(guest_) + 4 * uint32_t(slot));
+    const uint32_t ecx = c->ecx;
+    c->ecx = guest_;  // thiscall
+    if (slot == 1) CallGuest(*c, fn, {buf_});
+    else CallGuest(*c, fn, {buf_, io_failure ? 1u : 0u, call & 0xFFFFFFFFu, call >> 32});
+    c->ecx = ecx;
   }
   uint32_t guest_;
+  gaddr buf_ = 0;  // the struct in the guest's layout
 };
 
 std::map<uint32_t, std::unique_ptr<Proxy>> g_callbacks;            // by guest object
@@ -184,7 +247,10 @@ HLE("steam_api.dll", SteamAPI_Init, kCdecl) {
 }
 
 HLE("steam_api.dll", SteamAPI_RunCallbacks, kCdecl) {
+  Ctx* saved = t_callback_ctx;
+  t_callback_ctx = &c;
   SteamAPI_RunCallbacks();
+  t_callback_ctx = saved;
   return 0;
 }
 

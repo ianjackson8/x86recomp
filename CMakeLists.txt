@@ -412,7 +412,15 @@ if(RECOMP_STEAMWORKS_SDK AND NOT RECOMP_IOS)
             "${RECOMP_STEAMWORKS_SDK}/public/steam" "${_steam_inc}"
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/steam_vtables.py"
     COMMENT "Steam interface vtables from the Steamworks SDK headers")
-  add_library(recomp_steam SHARED src/runtime/hle/steam_api.cpp "${_steam_inc}")
+  # Callback structs in the guest's layout (clang lays the headers out for
+  # i686-pc-windows-msvc), for repacking libsteam_api's into it.
+  set(_steam_cb "${CMAKE_CURRENT_BINARY_DIR}/steam_callbacks.inc")
+  add_custom_command(OUTPUT "${_steam_cb}"
+    COMMAND ${Python3_EXECUTABLE} -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/steam_callbacks.py"
+            "${RECOMP_STEAMWORKS_SDK}/public" "${CMAKE_CXX_COMPILER}" "${_steam_cb}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/steam_callbacks.py"
+    COMMENT "Steam callback layouts from the Steamworks SDK headers")
+  add_library(recomp_steam SHARED src/runtime/hle/steam_api.cpp "${_steam_inc}" "${_steam_cb}")
   target_include_directories(recomp_steam PRIVATE "${RECOMP_STEAMWORKS_SDK}/public"
                              "${CMAKE_CURRENT_BINARY_DIR}")
   target_link_libraries(recomp_steam PRIVATE recomp_runtime "${_steam_lib}")
