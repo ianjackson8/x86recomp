@@ -128,6 +128,19 @@ inline float ArgF(const Ctx& c, int i) {
   return v;
 }
 // Returns from a handler with a double (float) result in xmm0.
+// A 64-bit integer result: edx:eax for 32-bit guests (the thunk sets eax
+// from the return value), rax for x64 ones.
+inline uint64_t Ret64(Ctx& c, uint64_t v) {
+  if (!g_proc->x64) c.edx = uint32_t(v >> 32);
+  return v;
+}
+// A 64-bit integer argument: one slot on x64 (index i64), two 4-byte
+// slots from slot32 on 32-bit guests.
+inline uint64_t Arg64(const Ctx& c, int i64, int slot32) {
+  if (g_proc->x64) return Arg(c, i64);
+  return (Arg(c, slot32) & 0xFFFFFFFFu) | (Arg(c, slot32 + 1) << 32);
+}
+
 inline uint64_t RetD(Ctx& c, double v) {
   if (!g_proc->x64) {
     uint64_t b;

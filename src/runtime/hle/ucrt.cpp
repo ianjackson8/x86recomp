@@ -268,6 +268,61 @@ HLE("ucrtbase.dll", _controlfp_s, kCdecl) {
   return 0;
 }
 
+// ---- error handlers -------------------------------------------------------------
+// A game (or a crash reporter in it) installs its own handlers for invalid
+// parameters, new failures, terminate, signals. Here those conditions are
+// already fatal errors that name what happened, so each handler is
+// recorded (and returned by the next call, as the CRT does) but not called.
+
+namespace {
+std::mutex g_handlers_mu;
+gaddr Swap(gaddr& slot, gaddr v) {
+  std::lock_guard<std::mutex> l(g_handlers_mu);
+  gaddr old = slot;
+  slot = v;
+  return old;
+}
+gaddr g_invalid_parameter = 0, g_new_handler = 0, g_terminate = 0;
+uint32_t g_error_mode = 0, g_abort_behavior = 0x3;  // _WRITE_ABORT_MSG | _CALL_REPORTFAULT
+gaddr g_signals[23] = {};                            // by signal number (SIGABRT 22)
+}  // namespace
+
+// _set_error_mode(mode): _OUT_TO_DEFAULT 0, _OUT_TO_STDERR 1, _OUT_TO_MSGBOX
+// 2; _REPORT_ERRMODE 3 queries. Returns the previous mode.
+HLE64("ucrtbase.dll", _set_error_mode, kCdecl) {
+  const int32_t m = int32_t(Arg(c, 0));
+  std::lock_guard<std::mutex> l(g_handlers_mu);
+  const uint32_t old = g_error_mode;
+  if (m >= 0 && m <= 2) g_error_mode = uint32_t(m);
+  else if (m != 3) return uint32_t(-1);
+  return old;
+}
+HLE64("ucrtbase.dll", _set_invalid_parameter_handler, kCdecl) {
+  return Swap(g_invalid_parameter, Arg(c, 0));
+}
+HLE64("ucrtbase.dll", _set_new_handler, kCdecl) { return Swap(g_new_handler, Arg(c, 0)); }
+HLE64("ucrtbase.dll", set_terminate, kCdecl) { return Swap(g_terminate, Arg(c, 0)); }
+// _set_abort_behavior(flags, mask): the old flags.
+HLE64("ucrtbase.dll", _set_abort_behavior, kCdecl) {
+  std::lock_guard<std::mutex> l(g_handlers_mu);
+  const uint32_t old = g_abort_behavior, mask = uint32_t(Arg(c, 1));
+  g_abort_behavior = (old & ~mask) | (uint32_t(Arg(c, 0)) & mask);
+  return old;
+}
+// signal(sig, handler): the previous handler (SIG_DFL 0); SIG_ERR (-1) for a
+// signal the CRT does not know.
+HLE64("ucrtbase.dll", signal, kCdecl) {
+  const int32_t sig = int32_t(Arg(c, 0));
+  if (sig != 2 && sig != 4 && sig != 8 && sig != 11 && sig != 15 && sig != 21 && sig != 22) {
+    Wr32(ErrnoSlot(), EINVAL);
+    return uint32_t(-1);
+  }
+  return Swap(g_signals[sig], Arg(c, 1));
+}
+HLE64("ucrtbase.dll", raise, kCdecl) {
+  FatalF("guest raised signal %d", int32_t(Arg(c, 0)));
+}
+
 // The startup code's __except filters: no exception is handled there.
 HLE64("ucrtbase.dll", _seh_filter_exe, kCdecl) { return 0; }  // CONTINUE_SEARCH
 HLE64("ucrtbase.dll", _seh_filter_dll, kCdecl) { return 0; }
@@ -631,6 +686,32 @@ HLE64("ucrtbase.dll", strtok_s, kCdecl) {
   return s;
 }
 
+// ---- wide character classes ---------------------------------------------------
+// Exact for ASCII. Beyond it Windows classifies by its Unicode tables
+// (GetStringTypeW), not modelled yet: such a character is a fatal error
+// naming the call, never a guessed class. WEOF (0xFFFF) is in no class.
+
+namespace {
+int WClass(const Ctx& c, const char* fn) {
+  const uint32_t ch = uint32_t(Arg(c, 0)) & 0xFFFF;
+  if (ch == 0xFFFF) return -1;
+  if (ch >= 0x80) FatalF("guest CRT: %s(U+%04X): non-ASCII classes not modelled yet", fn, ch);
+  return int(ch);
+}
+}  // namespace
+HLE64("ucrtbase.dll", iswdigit, kCdecl) {
+  int ch = WClass(c, "iswdigit");
+  return ch >= 0 && std::isdigit(ch) ? 1 : 0;
+}
+HLE64("ucrtbase.dll", iswspace, kCdecl) {
+  int ch = WClass(c, "iswspace");
+  return ch >= 0 && std::isspace(ch) ? 1 : 0;
+}
+HLE64("ucrtbase.dll", iswalnum, kCdecl) {
+  int ch = WClass(c, "iswalnum");
+  return ch >= 0 && std::isalnum(ch) ? 1 : 0;
+}
+
 // ---- wide strings ("C" locale) ---------------------------------------------
 
 namespace {
@@ -848,6 +929,134 @@ HLE64("ucrtbase.dll", mbstowcs, kCdecl) {
   for (; i < n && i < len; i++) Wr16(d + 2 * i, uint8_t(src[i]));
   if (i < n) Wr16(d + 2 * i, 0);
   return i;
+}
+
+// ---- more numeric and character conversion ("C" locale) -------------------
+
+namespace {
+// The leading ASCII of a wide string (numbers parse within it; characters
+// map one to one, so an end position carries back).
+std::string AsciiPrefix(gaddr w) {
+  std::string s;
+  for (uint16_t ch; (ch = Rd16(w + 2 * s.size())) && ch < 0x80;) s.push_back(char(ch));
+  return s;
+}
+constexpr uint32_t kEilseq = 42;  // EILSEQ in the UCRT
+}  // namespace
+
+HLE64("ucrtbase.dll", _wtoi, kCdecl) {
+  long long v = std::strtoll(AsciiPrefix(Arg(c, 0)).c_str(), nullptr, 10);
+  return uint32_t(int32_t(v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : v));
+}
+HLE64("ucrtbase.dll", _wtof, kCdecl) {
+  return RetD(c, std::strtod(AsciiPrefix(Arg(c, 0)).c_str(), nullptr));
+}
+// _atof_l(str, locale): only the "C" locale exists here.
+HLE64("ucrtbase.dll", _atof_l, kCdecl) { return RetD(c, std::strtod(S(Arg(c, 0)), nullptr)); }
+// wcstod(str, &end): *end a guest wchar_t pointer.
+HLE64("ucrtbase.dll", wcstod, kCdecl) {
+  const gaddr w = Arg(c, 0), end = Arg(c, 1);
+  const std::string a = AsciiPrefix(w);
+  char* e = nullptr;
+  errno = 0;
+  const double v = std::strtod(a.c_str(), &e);
+  if (errno == ERANGE) SetErrno(ERANGE);
+  if (end) WrPtr(end, w + 2 * gaddr(e - a.c_str()));
+  return RetD(c, v);
+}
+// _strtoui64(str, &end, base): ULLONG_MAX and ERANGE on overflow.
+HLE64("ucrtbase.dll", _strtoui64, kCdecl) {
+  const int base = int(Arg(c, 2));
+  const unsigned long long v = StrTo<unsigned long long>(
+      Arg(c, 0), Arg(c, 1), [&](const char* p, char** e) { return std::strtoull(p, e, base); });
+  return Ret64(c, v);
+}
+
+namespace {
+// _itoa's text: a minus sign only in radix 10; other radixes show the
+// value's 32-bit two's complement.
+std::string IToA(int32_t v, int radix) {
+  if (radix < 2 || radix > 36) return {};
+  const bool neg = radix == 10 && v < 0;
+  uint32_t u = neg ? uint32_t(0) - uint32_t(v) : uint32_t(v);
+  std::string r;
+  do {
+    uint32_t d = u % uint32_t(radix);
+    r.insert(r.begin(), char(d < 10 ? '0' + d : 'a' + d - 10));
+    u /= uint32_t(radix);
+  } while (u);
+  return neg ? "-" + r : r;
+}
+}  // namespace
+HLE64("ucrtbase.dll", _itoa, kCdecl) {
+  const std::string t = IToA(int32_t(Arg(c, 0)), int(Arg(c, 2)));
+  if (t.empty()) FatalF("guest CRT: invalid parameter (_itoa radix %d)", int(Arg(c, 2)));
+  PutStr(Arg(c, 1), t);
+  return Arg(c, 1);
+}
+HLE64("ucrtbase.dll", _itoa_s, kCdecl) {
+  const gaddr buf = Arg(c, 1);
+  const uint64_t size = Arg(c, 2);
+  const std::string t = IToA(int32_t(Arg(c, 0)), int(Arg(c, 3)));
+  if (!buf || !size || t.empty() || t.size() + 1 > size) {
+    if (buf && size) Wr8(buf, 0);
+    FatalF("guest CRT: invalid parameter (_itoa_s)");
+  }
+  PutStr(buf, t);
+  return 0;
+}
+
+// wcstombs(dst, src, n): the "C" locale maps characters 0-255 to the byte
+// of the same value; any other is EILSEQ and (size_t)-1. NULL dst: the
+// length needed.
+HLE64("ucrtbase.dll", wcstombs, kCdecl) {
+  const gaddr d = Arg(c, 0), src = Arg(c, 1);
+  const uint64_t n = Arg(c, 2), fail = g_proc->x64 ? ~0ull : 0xFFFFFFFFull;
+  uint64_t i = 0;
+  for (;; i++) {
+    const uint16_t ch = Rd16(src + 2 * i);
+    if (ch > 0xFF) {
+      SetErrno(kEilseq);
+      return fail;
+    }
+    if (!ch) break;
+    if (d) {
+      if (i == n) return n;
+      Wr8(d + i, uint8_t(ch));
+    }
+  }
+  if (d && i < n) Wr8(d + i, 0);
+  return i;
+}
+// mbstowcs_s(&converted, dst, dstsize, src, count): converted includes the
+// NUL; count _TRUNCATE converts what fits (STRUNCATE).
+HLE64("ucrtbase.dll", mbstowcs_s, kCdecl) {
+  constexpr uint32_t kStruncate = 80;
+  const gaddr out = Arg(c, 0), d = Arg(c, 1), src = Arg(c, 3);
+  const uint64_t size = Arg(c, 2), count = Arg(c, 4);
+  const bool trunc = count == (g_proc->x64 ? ~0ull : 0xFFFFFFFFull);
+  if (!src) FatalF("guest CRT: invalid parameter (mbstowcs_s: no source)");
+  const char* p = S(src);
+  uint64_t len = 0;
+  while (p[len] && (trunc || len < count)) len++;
+  if (!d) {
+    if (out) WrPtr(out, len + 1);
+    return 0;
+  }
+  uint32_t r = 0;
+  if (len + 1 > size) {
+    if (!trunc) {
+      Wr16(d, 0);
+      FatalF("guest CRT: invalid parameter (mbstowcs_s: %llu characters into %llu)",
+             (unsigned long long)(len + 1), (unsigned long long)size);
+    }
+    len = size - 1;
+    r = kStruncate;
+  }
+  for (uint64_t i = 0; i < len; i++) Wr16(d + 2 * i, uint8_t(p[i]));
+  Wr16(d + 2 * len, 0);
+  if (out) WrPtr(out, len + 1);
+  return r;
 }
 
 // ---- utility ---------------------------------------------------------------

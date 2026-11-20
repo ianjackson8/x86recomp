@@ -1,4 +1,4 @@
-// The UCRT's <time.h> for x64 guests. Times are __time64_t; the valid range
+// The UCRT's <time.h> (x64 and, where marked HLE64, 32-bit guests). Times are __time64_t; the valid range
 // is the UCRT's, 1970-01-01 00:00:00 to 3000-12-31 23:59:59 UTC (outside
 // it the functions fail with EINVAL). Local time is the zone
 // GetTimeZoneInformation reports: the host's current UTC offset, without
@@ -15,6 +15,7 @@
 #include "runtime/hle/kernel32_state.h"
 #include "runtime/hle/ucrt.h"
 #include "runtime/log.h"
+#include "runtime/platform.h"
 #include "runtime/runtime.h"
 
 namespace recomp::hle {
@@ -91,13 +92,13 @@ bool AscTime(const std::tm& t, char out[26]) {
 
 }  // namespace
 
-HLE64_ONLY("ucrtbase.dll", _time64, kCdecl) {
+HLE64("ucrtbase.dll", _time64, kCdecl) {
   int64_t t = int64_t(std::time(nullptr));
   if (Arg(c, 0)) Wr64(Arg(c, 0), uint64_t(t));
-  return uint64_t(t);
+  return Ret64(c, uint64_t(t));
 }
 
-HLE64_ONLY("ucrtbase.dll", _localtime64, kCdecl) {
+HLE64("ucrtbase.dll", _localtime64, kCdecl) {
   int64_t t = int64_t(Rd64(Arg(c, 0)));
   if (t < 0 || t > kMaxTime64) {
     Fail(EINVAL);
@@ -108,7 +109,7 @@ HLE64_ONLY("ucrtbase.dll", _localtime64, kCdecl) {
 }
 
 // _gmtime64_s(tm*, const __time64_t*): 0 or EINVAL (the tm then all -1).
-HLE64_ONLY("ucrtbase.dll", _gmtime64_s, kCdecl) {
+HLE64("ucrtbase.dll", _gmtime64_s, kCdecl) {
   gaddr out = Arg(c, 0), tp = Arg(c, 1);
   if (!out) {
     Fail(EINVAL);
@@ -126,20 +127,73 @@ HLE64_ONLY("ucrtbase.dll", _gmtime64_s, kCdecl) {
 
 // _mkgmtime64(tm*): the tm as UTC, normalised in place (fields out of their
 // ranges carry over, wday and yday are set); -1 out of range.
-HLE64_ONLY("ucrtbase.dll", _mkgmtime64, kCdecl) {
+// _mktime64(tm): the local time tm names (normalised in place), as UTC
+// seconds; -1 and EINVAL out of range.
+HLE64("ucrtbase.dll", _mktime64, kCdecl) {
+  gaddr p = Arg(c, 0);
+  std::tm t = GetTm(p);
+  const int64_t r = int64_t(timegm(&t)) - LocalOffset();
+  if (r < 0 || r > kMaxTime64) {
+    Fail(EINVAL);
+    return Ret64(c, uint64_t(-1));
+  }
+  PutTm(p, Local(r));
+  return Ret64(c, uint64_t(r));
+}
+
+// _gmtime64(&t): the thread's struct tm, or NULL and EINVAL out of range.
+HLE64("ucrtbase.dll", _gmtime64, kCdecl) {
+  const int64_t t = int64_t(Rd64(Arg(c, 0)));
+  if (t < 0 || t > kMaxTime64) {
+    Fail(EINVAL);
+    return 0;
+  }
+  PutTm(TmBuffer(), Utc(t));
+  return TmBuffer();
+}
+
+// _difftime64(a, b): a - b in seconds, a double.
+HLE64("ucrtbase.dll", _difftime64, kCdecl) {
+  const int64_t a = int64_t(Arg64(c, 0, 0)), b = int64_t(Arg64(c, 1, 2));
+  return RetD(c, double(a - b));
+}
+
+// clock(): milliseconds (CLOCKS_PER_SEC 1000) since this library was
+// loaded, which is at the guest process's start.
+namespace {
+const uint64_t g_clock_start_ns = platform::MonotonicNs();
+}  // namespace
+HLE64("ucrtbase.dll", clock, kCdecl) {
+  return uint32_t((platform::MonotonicNs() - g_clock_start_ns) / 1000000);
+}
+
+// _ftime64(&tb): struct __timeb64 {__time64_t time; unsigned short
+// millitm; short timezone (minutes west of UTC); short dstflag;}.
+HLE64("ucrtbase.dll", _ftime64, kCdecl) {
+  const gaddr tb = Arg(c, 0);
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  Wr64(tb, uint64_t(ts.tv_sec));
+  Wr16(tb + 8, uint16_t(ts.tv_nsec / 1000000));
+  Wr16(tb + 10, uint16_t(int16_t(-LocalOffset() / 60)));
+  Wr16(tb + 12, 0);
+  return 0;
+}
+
+HLE64("ucrtbase.dll", _mkgmtime64, kCdecl) {
   gaddr p = Arg(c, 0);
   std::tm t = GetTm(p);
   int64_t r = int64_t(timegm(&t));
   if (r < 0 || r > kMaxTime64) {
     Fail(EINVAL);
-    return uint64_t(-1);
+    return Ret64(c, uint64_t(-1));
   }
   t.tm_isdst = 0;
   PutTm(p, t);
-  return uint64_t(r);
+  return Ret64(c, uint64_t(r));
 }
 
-HLE64_ONLY("ucrtbase.dll", _ctime64, kCdecl) {
+HLE64("ucrtbase.dll", _ctime64, kCdecl) {
   int64_t t = int64_t(Rd64(Arg(c, 0)));
   char s[26];
   if (t < 0 || t > kMaxTime64 || !AscTime(Local(t), s)) {
@@ -150,7 +204,7 @@ HLE64_ONLY("ucrtbase.dll", _ctime64, kCdecl) {
   return TextBuffer();
 }
 
-HLE64_ONLY("ucrtbase.dll", asctime, kCdecl) {
+HLE64("ucrtbase.dll", asctime, kCdecl) {
   char s[26];
   if (!AscTime(GetTm(Arg(c, 0)), s)) {
     Fail(EINVAL);
@@ -163,7 +217,7 @@ HLE64_ONLY("ucrtbase.dll", asctime, kCdecl) {
 // strftime(buf, max, format, tm): the conversions that do not depend on the
 // locale or the time zone, and the "C" locale's names; others are fatal.
 // 0 (and an empty buf, errno ERANGE) if the result does not fit.
-HLE64_ONLY("ucrtbase.dll", strftime, kCdecl) {
+HLE64("ucrtbase.dll", strftime, kCdecl) {
   gaddr buf = Arg(c, 0);
   uint64_t max = Arg(c, 1);
   std::string fmt = GStr(Arg(c, 2));

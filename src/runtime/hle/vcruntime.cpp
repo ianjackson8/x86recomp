@@ -65,6 +65,39 @@ HLE64("vcruntime140.dll", strstr, kCdecl) {
   return r ? Arg(c, 0) + gaddr(r - p) : 0;
 }
 
+// Wide (UTF-16) searches. wcschr/wcsrchr find c among the string's
+// characters including its terminating NUL, as strchr does.
+namespace {
+uint16_t W(gaddr p, uint64_t i) { return Rd16(p + 2 * i); }
+}  // namespace
+HLE64("vcruntime140.dll", wcschr, kCdecl) {
+  const gaddr p = Arg(c, 0);
+  const uint16_t ch = uint16_t(Arg(c, 1));
+  for (uint64_t i = 0;; i++) {
+    if (W(p, i) == ch) return p + 2 * i;
+    if (!W(p, i)) return 0;
+  }
+}
+HLE64("vcruntime140.dll", wcsrchr, kCdecl) {
+  const gaddr p = Arg(c, 0);
+  const uint16_t ch = uint16_t(Arg(c, 1));
+  gaddr found = 0;
+  for (uint64_t i = 0;; i++) {
+    if (W(p, i) == ch) found = p + 2 * i;
+    if (!W(p, i)) return found;
+  }
+}
+HLE64("vcruntime140.dll", wcsstr, kCdecl) {
+  const gaddr p = Arg(c, 0), q = Arg(c, 1);
+  if (!W(q, 0)) return p;
+  for (uint64_t i = 0; W(p, i); i++) {
+    uint64_t k = 0;
+    while (W(q, k) && W(p, i + k) == W(q, k)) k++;
+    if (!W(q, k)) return p + 2 * i;
+  }
+  return 0;
+}
+
 // ---- type_info ----------------------------------------------------------------
 // __std_type_info_data {const char* _UndecoratedName; char _DecoratedName[];}
 // (after type_info's vtable pointer). Types are equal when their decorated
@@ -135,6 +168,26 @@ HLE64("vcruntime140.dll", __std_exception_destroy, kCdecl) {
   Wr8(data + ps, 0);
   return 0;
 }
+
+// _set_purecall_handler / set_unexpected: recorded, never called (a pure
+// virtual call or an unexpected exception is fatal here, named).
+namespace {
+std::mutex g_vc_mu;
+gaddr g_purecall = 0, g_unexpected = 0;
+}  // namespace
+HLE64("vcruntime140.dll", _set_purecall_handler, kCdecl) {
+  std::lock_guard<std::mutex> l(g_vc_mu);
+  gaddr old = g_purecall;
+  g_purecall = Arg(c, 0);
+  return old;
+}
+HLE64("vcruntime140.dll", set_unexpected, kCdecl) {
+  std::lock_guard<std::mutex> l(g_vc_mu);
+  gaddr old = g_unexpected;
+  g_unexpected = Arg(c, 0);
+  return old;
+}
+HLE64("vcruntime140.dll", unexpected, kCdecl) { FatalF("guest called unexpected()"); }
 
 HLE64("vcruntime140.dll", __std_terminate, kCdecl) { FatalF("guest called std::terminate()"); }
 HLE64("vcruntime140.dll", _purecall, kCdecl) {

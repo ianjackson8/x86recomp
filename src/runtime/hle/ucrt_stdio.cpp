@@ -132,17 +132,30 @@ std::string NanText(double v, bool upper) {
   return s;
 }
 
-// Pads `body` to `width` (left-justified with '-'), as the host does.
-std::string Pad(const std::string& body, int width, bool left) {
+// Pads `body` to `width` characters (left-justified with '-').
+std::u16string Pad(const std::u16string& body, int width, bool left) {
   if (int(body.size()) >= width) return body;
-  return left ? body + std::string(width - body.size(), ' ')
-              : std::string(width - body.size(), ' ') + body;
+  return left ? body + std::u16string(width - body.size(), u' ')
+              : std::u16string(width - body.size(), u' ') + body;
 }
+std::u16string Ascii(const std::string& s) { return std::u16string(s.begin(), s.end()); }
+// A char string as code units: its byte values (the "C" locale's
+// char <-> wchar_t mapping).
+std::u16string Bytes(const std::string& s) {
+  std::u16string r;
+  for (unsigned char ch : s) r.push_back(ch);
+  return r;
+}
+bool IsAsciiIn(char16_t ch, const char* set) { return ch < 0x80 && ch && std::strchr(set, char(ch)); }
 
-// The UCRT's printf (narrow functions: %s and %c are char, %S and %C
-// wchar_t) over a guest format and va_list.
-std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
-  std::string out;
+// The UCRT's printf over a guest format and va_list, in code units. Narrow
+// functions (wide_fn false: %s and %c are char, %S and %C wchar_t) produce
+// byte values, a wchar_t string going through the ANSI code page; wide
+// functions (%s/%c wchar_t, %S/%C char) produce UTF-16, a char string's
+// bytes becoming code units.
+std::u16string FormatCore(const std::u16string& fmt, Args a, bool three_digit_exponents,
+                          bool wide_fn) {
+  std::u16string out;
   for (size_t i = 0; i < fmt.size(); i++) {
     if (fmt[i] != '%') {
       out.push_back(fmt[i]);
@@ -150,7 +163,7 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
     }
     size_t start = i++;
     std::string flags;
-    while (i < fmt.size() && std::strchr("-+ #0", fmt[i])) flags.push_back(fmt[i++]);
+    while (i < fmt.size() && IsAsciiIn(fmt[i], "-+ #0")) flags.push_back(char(fmt[i++]));
     int width = -1, prec = -1;
     if (i < fmt.size() && fmt[i] == '*') {
       width = int32_t(a.Next());
@@ -160,8 +173,8 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
       }
       i++;
     } else {
-      while (i < fmt.size() && std::isdigit(uint8_t(fmt[i])))
-        width = (width < 0 ? 0 : width) * 10 + (fmt[i++] - '0');
+      while (i < fmt.size() && IsAsciiIn(fmt[i], "0123456789"))
+        width = (width < 0 ? 0 : width) * 10 + (fmt[i++] - u'0');
     }
     if (i < fmt.size() && fmt[i] == '.') {
       i++;
@@ -170,7 +183,7 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
         prec = int32_t(a.Next());
         i++;
       } else {
-        while (i < fmt.size() && std::isdigit(uint8_t(fmt[i]))) prec = prec * 10 + (fmt[i++] - '0');
+        while (i < fmt.size() && IsAsciiIn(fmt[i], "0123456789")) prec = prec * 10 + (fmt[i++] - u'0');
       }
     }
     // Length: hh h l ll L j z t I I32 I64 w.
@@ -178,7 +191,7 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
     bool wide = false, narrow = false;
     for (;;) {
       if (i >= fmt.size()) break;
-      char ch = fmt[i];
+      char ch = fmt[i] < 0x80 ? char(fmt[i]) : 0;
       if (ch == 'h') {
         bits = (i + 1 < fmt.size() && fmt[i + 1] == 'h') ? (i++, 8) : 16;
         narrow = true;
@@ -201,10 +214,10 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
         wide = true;
         i++;
       } else if (ch == 'I') {
-        if (fmt.compare(i, 3, "I64") == 0) {
+        if (fmt.compare(i, 3, u"I64") == 0) {
           bits = 64;
           i += 3;
-        } else if (fmt.compare(i, 3, "I32") == 0) {
+        } else if (fmt.compare(i, 3, u"I32") == 0) {
           bits = 32;
           i += 3;
         } else {
@@ -219,20 +232,20 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
       out += fmt.substr(start);
       break;
     }
-    char conv = fmt[i];
+    char conv = fmt[i] < 0x80 ? char(fmt[i]) : '?';
     std::string spec = "%" + flags + (width >= 0 ? std::to_string(width) : "") +
                        (prec >= 0 ? "." + std::to_string(prec) : "");
     char buf[512];
     switch (conv) {
       case '%':
-        out.push_back('%');
+        out.push_back(u'%');
         break;
       case 'd': case 'i': {
         uint64_t v = a.Next(bits);
         long long s = bits == 64 ? int64_t(v) : bits == 16 ? int16_t(v) : bits == 8 ? int8_t(v)
                                                                              : int32_t(v);
         std::snprintf(buf, sizeof buf, (spec + "lld").c_str(), s);
-        out += buf;
+        out += Ascii(buf);
         break;
       }
       case 'u': case 'o': case 'x': case 'X': {
@@ -240,27 +253,36 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
         unsigned long long u = bits == 64 ? v : bits == 16 ? uint16_t(v) : bits == 8 ? uint8_t(v)
                                                                            : uint32_t(v);
         std::snprintf(buf, sizeof buf, (spec + "ll" + conv).c_str(), u);
-        out += buf;
+        out += Ascii(buf);
         break;
       }
       case 'p': {
         // As many hex digits as a pointer has: 16 (x64) or 8.
         if (a.x64) std::snprintf(buf, sizeof buf, "%016llX", (unsigned long long)a.NextPtr());
         else std::snprintf(buf, sizeof buf, "%08llX", (unsigned long long)a.NextPtr());
-        out += Pad(buf, width, flags.find('-') != std::string::npos);
+        out += Pad(Ascii(buf), width, flags.find('-') != std::string::npos);
         break;
       }
       case 'c': case 'C': {
         uint64_t v = a.Next();
-        bool w = conv == 'C' ? !narrow : wide;
-        char ch = w ? win32::Narrow(std::u16string(1, char16_t(v)))[0] : char(v);
-        out += Pad(std::string(1, ch), width, flags.find('-') != std::string::npos);
+        // The argument's width, as for %s.
+        bool w = conv == 'C' ? (wide_fn ? wide : !narrow) : (wide_fn ? !narrow : wide);
+        std::u16string ch;
+        if (w && wide_fn) ch = std::u16string(1, char16_t(v));                   // wchar_t out
+        else if (w) ch = Bytes(win32::Narrow(std::u16string(1, char16_t(v))));  // via ANSI
+        else ch = std::u16string(1, char16_t(uint8_t(v)));                        // a char
+        out += Pad(ch, width, flags.find('-') != std::string::npos);
         break;
       }
       case 's': case 'S': {
         gaddr p = a.NextPtr();
-        bool w = conv == 'S' ? !narrow : wide;
-        std::string s = !p ? "(null)" : w ? win32::Narrow(GWStr(p)) : GStr(p);
+        // Which width the argument has: the function's own unless S (the
+        // other one) or h/l/w say otherwise.
+        bool w = conv == 'S' ? (wide_fn ? wide : !narrow) : (wide_fn ? !narrow : wide);
+        std::u16string s = !p                 ? Ascii("(null)")
+                           : w && wide_fn     ? GWStr(p)
+                           : w                ? Bytes(win32::Narrow(GWStr(p)))
+                                              : Bytes(GStr(p));
         if (prec >= 0 && size_t(prec) < s.size()) s.resize(size_t(prec));
         out += Pad(s, width, flags.find('-') != std::string::npos);
         break;
@@ -274,7 +296,7 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
                                               (upper ? "INF" : "inf");
           if (!std::signbit(v) && flags.find('+') != std::string::npos) s = "+" + s;
           else if (!std::signbit(v) && flags.find(' ') != std::string::npos) s = " " + s;
-          out += Pad(s, width, flags.find('-') != std::string::npos);
+          out += Pad(Ascii(s), width, flags.find('-') != std::string::npos);
           break;
         }
         if (conv == 'a' || conv == 'A')
@@ -285,17 +307,23 @@ std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
           size_t e = s.find_first_of("eE");
           if (e != std::string::npos && s.size() - e == 4) s.insert(e + 2, "0");
         }
-        out += s;
+        out += Ascii(s);
         break;
       }
       case 'n':
         FatalF("guest printf: %%n (disabled by default in the UCRT)");
       default:
         // An invalid conversion: the UCRT's invalid parameter handler.
-        FatalF("guest printf: invalid conversion %%%c in \"%s\"", conv, fmt.c_str());
+        FatalF("guest printf: invalid conversion %%%c in \"%s\"", conv, win32::Narrow(fmt).c_str());
     }
   }
   return out;
+}
+
+// The narrow functions' text: FormatCore's units are bytes.
+std::string Format(const std::string& fmt, Args a, bool three_digit_exponents) {
+  const std::u16string u = FormatCore(Bytes(fmt), a, three_digit_exponents, false);
+  return std::string(u.begin(), u.end());
 }
 
 // __stdio_common_v*printf options.
@@ -387,6 +415,108 @@ HLE64("ucrtbase.dll", __stdio_common_vfprintf, kCdecl) {
   std::lock_guard<std::recursive_mutex> l(g_streams_mu);
   return Write(st, s.data(), s.size()) == s.size() ? uint32_t(s.size()) : uint32_t(-1);
 }
+
+// ---- wide printf -------------------------------------------------------------------
+
+namespace {
+// The wide functions' format, as code units; the _p (positional) forms
+// take %n$ arguments, not modelled yet: fatal if a format uses one.
+std::u16string WideFormat(gaddr fmt, bool positional) {
+  std::u16string f = GWStr(fmt);
+  if (positional)
+    for (size_t i = 0; i + 1 < f.size(); i++)
+      if (f[i] == u'%' && f[i + 1] >= u'1' && f[i + 1] <= u'9') {
+        size_t k = i + 1;
+        while (k < f.size() && f[k] >= u'0' && f[k] <= u'9') k++;
+        if (k < f.size() && f[k] == u'$') FatalF("guest wprintf_p: positional arguments not supported yet");
+      }
+  return f;
+}
+// PutFormatted for wchar_t buffers (count in characters).
+uint64_t PutFormattedW(uint64_t options, gaddr buf, uint64_t count, const std::u16string& s) {
+  const uint64_t n = s.size();
+  if (!buf) return uint32_t(int32_t(n));
+  auto put = [&](uint64_t k) {
+    for (uint64_t i = 0; i < k; i++) Wr16(buf + 2 * i, s[i]);
+  };
+  if (options & kStandardSnprintf) {
+    if (count) {
+      uint64_t k = std::min(n, count - 1);
+      put(k);
+      Wr16(buf + 2 * k, 0);
+    }
+    return uint32_t(int32_t(n));
+  }
+  uint64_t k = std::min(n, count);
+  put(k);
+  if (n < count) Wr16(buf + 2 * n, 0);
+  return n <= count ? uint32_t(int32_t(n)) : uint32_t(-1);
+}
+uint64_t VSwprintf(Ctx& c, bool positional) {
+  uint64_t opt = Opt(c);
+  std::u16string s = FormatCore(WideFormat(ArgAfterOpt(c, 3), positional), Args{ArgAfterOpt(c, 5)},
+                                opt & kThreeDigitExponents, true);
+  return PutFormattedW(opt, ArgAfterOpt(c, 1), ArgAfterOpt(c, 2), s);
+}
+// To a stream: the "C" locale's wctomb (units 0-255 to that byte); any
+// other character fails with EILSEQ.
+uint64_t VFwprintf(Ctx& c, bool positional) {
+  uint64_t opt = Opt(c);
+  Stream& st = Must(ArgAfterOpt(c, 1), "fwprintf");
+  std::u16string s = FormatCore(WideFormat(ArgAfterOpt(c, 2), positional), Args{ArgAfterOpt(c, 4)},
+                                opt & kThreeDigitExponents, true);
+  std::string b;
+  for (char16_t ch : s) {
+    if (ch > 0xFF) {
+      Wr32(GuestErrno(), 42);  // EILSEQ
+      return uint32_t(-1);
+    }
+    b.push_back(char(ch));
+  }
+  std::lock_guard<std::recursive_mutex> l(g_streams_mu);
+  return Write(st, b.data(), b.size()) == b.size() ? uint32_t(s.size()) : uint32_t(-1);
+}
+}  // namespace
+
+// __stdio_common_vswprintf(options, buffer, count, format, locale, va_list)
+HLE64("ucrtbase.dll", __stdio_common_vswprintf, kCdecl) { return VSwprintf(c, false); }
+HLE64("ucrtbase.dll", __stdio_common_vswprintf_p, kCdecl) { return VSwprintf(c, true); }
+// _s: a buffer too small is an invalid parameter.
+HLE64("ucrtbase.dll", __stdio_common_vswprintf_s, kCdecl) {
+  uint64_t opt = Opt(c);
+  gaddr buf = ArgAfterOpt(c, 1);
+  uint64_t count = ArgAfterOpt(c, 2);
+  std::u16string s = FormatCore(WideFormat(ArgAfterOpt(c, 3), false), Args{ArgAfterOpt(c, 5)},
+                                opt & kThreeDigitExponents, true);
+  if (!buf || s.size() + 1 > count)
+    FatalF("guest swprintf_s: %zu characters into a buffer of %llu", s.size(),
+           (unsigned long long)count);
+  for (size_t i = 0; i <= s.size(); i++) Wr16(buf + 2 * i, i < s.size() ? s[i] : 0);
+  return uint32_t(s.size());
+}
+// __stdio_common_vsnwprintf_s(options, buffer, size, max_count, format,
+// locale, va_list): as vsnprintf_s, in characters.
+HLE64("ucrtbase.dll", __stdio_common_vsnwprintf_s, kCdecl) {
+  uint64_t opt = Opt(c);
+  gaddr buf = ArgAfterOpt(c, 1);
+  uint64_t size = ArgAfterOpt(c, 2), max = ArgAfterOpt(c, 3);
+  std::u16string s = FormatCore(WideFormat(ArgAfterOpt(c, 4), false), Args{ArgAfterOpt(c, 6)},
+                                opt & kThreeDigitExponents, true);
+  if (!buf || !size) FatalF("guest vsnwprintf_s: no buffer");
+  const bool trunc = IsTruncate(max);
+  uint64_t limit = std::min(trunc ? size - 1 : max, size - 1);
+  bool truncated = s.size() > limit;
+  if (truncated && !trunc && max >= size)
+    FatalF("guest vsnwprintf_s: %zu characters into a buffer of %llu", s.size(),
+           (unsigned long long)size);
+  uint64_t k = std::min<uint64_t>(s.size(), limit);
+  for (uint64_t i = 0; i < k; i++) Wr16(buf + 2 * i, s[i]);
+  Wr16(buf + 2 * k, 0);
+  return truncated ? uint32_t(-1) : uint32_t(k);
+}
+HLE64("ucrtbase.dll", __stdio_common_vfwprintf, kCdecl) { return VFwprintf(c, false); }
+HLE64("ucrtbase.dll", __stdio_common_vfwprintf_s, kCdecl) { return VFwprintf(c, false); }
+HLE64("ucrtbase.dll", __stdio_common_vfwprintf_p, kCdecl) { return VFwprintf(c, true); }
 
 // ---- streams --------------------------------------------------------------------
 
