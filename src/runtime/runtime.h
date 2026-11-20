@@ -199,7 +199,7 @@ struct Module {
   PeImage img;
   int refs = 0;        // LoadLibrary count (under kernel32's loader lock)
   bool stale = false;  // has run since it was mapped: map afresh on load
-  int tls_index = -1;  // its static TLS slot (x64 guests), -1: none
+  int tls_index = -1;  // its static TLS slot, -1: none
 };
 
 struct Process {

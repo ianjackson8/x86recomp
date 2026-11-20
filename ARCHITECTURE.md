@@ -348,8 +348,12 @@ separate game, client-game and UI modules) have every module lifted:
   GetModuleHandle/GetModuleFileName know the module while it is loaded.
   After the last FreeLibrary (DllMain detach) the next load maps the file
   afresh, so the DLL starts from its initial data as after a real unload.
-- Static TLS in a lifted DLL is refused: Windows XP did not set it up for
-  LoadLibrary'd DLLs, so DLLs of that era have none.
+- Static TLS in a lifted DLL is set up as Vista and later do for
+  LoadLibrary'd DLLs (XP did not, so DLLs of that era have none; later
+  32-bit compilers emit a few bytes of it for thread-safe statics): each
+  such DLL gets a TLS index after the EXE's, written to its index
+  variable, and every thread a copy of its template. TLS callbacks are
+  refused.
   DLL_THREAD_ATTACH/DETACH are not sent (not needed so far).
 
 ### x87: full 80-bit model

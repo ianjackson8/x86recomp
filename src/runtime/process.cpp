@@ -196,8 +196,8 @@ static void InitTeb(Thread* t) {
     WrPtr(tls_array + ptr * uint32_t(index), b);
   };
   if (p.img.has_tls) block(p.img, 0);
-  // Lifted DLLs with static TLS (x64 guests, as on Vista and later): every
-  // thread has their blocks, loaded or not, since all are mapped at start.
+  // Lifted DLLs with static TLS (as on Vista and later): every thread has
+  // their blocks, loaded or not, since all are mapped at start.
   for (const Module& m : p.modules)
     if (m.tls_index >= 0) block(m.img, m.tls_index);
 }
@@ -399,13 +399,12 @@ static void MapModuleWith(Module& m, const ImportBinder& bind) {
   std::string err;
   if (!m.img.Load(m.host_path, p.mem, &err, m.base, bind))
     FatalF("lifted DLL %s: %s", m.name.c_str(), err.c_str());
-  // Windows XP did not set up static TLS for LoadLibrary'd DLLs either,
-  // so 32-bit DLLs of that era have none. x64 ones get a slot of their own
-  // after the EXE's (slot 0), kept across remaps.
+  // Static TLS of a lifted DLL, as Vista and later set it up for
+  // LoadLibrary'd DLLs (XP did not, so DLLs of that era have none; later
+  // 32-bit compilers emit it for thread-safe statics): a slot of its own
+  // after the EXE's (slot 0), kept across remaps, for 32-bit and x64
+  // guests alike. TLS callbacks are still refused.
   if (m.img.has_tls) {
-    if (!p.x64)
-      FatalF("lifted DLL %s has static TLS (__declspec(thread)): not supported",
-             m.name.c_str());
     CheckNoTlsCallbacks(m.img, m.name);
     if (m.tls_index < 0) {
       int next = 1;
