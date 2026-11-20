@@ -198,6 +198,30 @@ HLE64("kernel32.dll", FileTimeToDosDateTime, 3) {
   return 1;
 }
 
+// DosDateTimeToFileTime(date, time, &ft): FileTimeToDosDateTime's inverse
+// (no time zone conversion). A field out of range (month 0, a 31st in a
+// 30-day month, hour 24, ...) is ERROR_INVALID_PARAMETER.
+HLE64("kernel32.dll", DosDateTimeToFileTime, 3) {
+  const uint32_t date = uint32_t(Arg(c, 0)) & 0xFFFF, tim = uint32_t(Arg(c, 1)) & 0xFFFF;
+  std::tm t{};
+  t.tm_year = int(date >> 9) + 80;
+  t.tm_mon = int((date >> 5) & 15) - 1;
+  t.tm_mday = int(date & 31);
+  t.tm_hour = int(tim >> 11);
+  t.tm_min = int((tim >> 5) & 63);
+  t.tm_sec = int(tim & 31) * 2;
+  const std::tm want = t;
+  const time_t secs = timegm(&t);  // normalises; a change means out of range
+  if (want.tm_mon < 0 || want.tm_mday < 1 || t.tm_mon != want.tm_mon ||
+      t.tm_mday != want.tm_mday || t.tm_hour != want.tm_hour || t.tm_min != want.tm_min ||
+      t.tm_sec != want.tm_sec) {
+    SetLastError(kErrorInvalidParameter);
+    return 0;
+  }
+  Wr64(Arg(c, 2), uint64_t(secs) * 10000000 + kFileTimeUnixEpoch);
+  return 1;
+}
+
 HLE("kernel32.dll", FileTimeToSystemTime, 2) {
   uint64_t ft = Rd64(Arg(c, 0));
   if (ft < kFileTimeUnixEpoch) return 0;

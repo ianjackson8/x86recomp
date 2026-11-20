@@ -145,6 +145,7 @@ add_library(recomp_runtime SHARED
   src/runtime/hle/display_modes.cpp
   src/runtime/hle/gdi32.cpp
   src/runtime/hle/shell_net.cpp
+  src/runtime/hle/rpcrt4.cpp
   src/runtime/hle/ws2_32.cpp
   src/runtime/hle/com.cpp
   src/runtime/hle/present.cpp)

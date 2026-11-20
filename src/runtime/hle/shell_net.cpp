@@ -14,6 +14,7 @@
 #include <string>
 
 #include "runtime/hle/hle.h"
+#include "runtime/hle/shlwapi_path.h"
 #include "runtime/hle/kernel32_state.h"
 #include "runtime/hle/win32.h"
 #include "runtime/log.h"
@@ -94,6 +95,55 @@ HLE("shlwapi.dll", PathFileExistsA, 1) {
   struct stat st;
   return stat(HostPath(GStr(Arg(c, 0))).c_str(), &st) == 0 ? 1 : 0;
 }
+// The ANSI helpers below on shlwapi_path.h. Results are at most MAX_PATH
+// characters with the NUL, as shlwapi's.
+void PutPath(gaddr dst, const std::string& s) { PutStr(dst, s.substr(0, 259)); }
+HLE64("shlwapi.dll", PathRemoveBlanksA, 1) {
+  if (gaddr p = Arg(c, 0)) PutPath(p, shlwapi::RemoveBlanks(GStr(p)));
+  return 0;
+}
+HLE64("shlwapi.dll", PathRemoveFileSpecA, 1) {
+  const gaddr p = Arg(c, 0);
+  if (!p) return 0;
+  std::string s = GStr(p);
+  const bool changed = shlwapi::RemoveFileSpec(&s);
+  PutPath(p, s);
+  return changed ? 1 : 0;
+}
+HLE64("shlwapi.dll", PathIsRelativeA, 1) {
+  const gaddr p = Arg(c, 0);
+  return !p || shlwapi::IsRelative(GStr(p)) ? 1 : 0;
+}
+HLE64("shlwapi.dll", PathGetDriveNumberA, 1) {
+  const gaddr p = Arg(c, 0);
+  return p ? uint32_t(shlwapi::DriveNumber(GStr(p))) : uint32_t(-1);
+}
+// PathSkipRootA(path): a pointer into path past its root, or NULL.
+HLE64("shlwapi.dll", PathSkipRootA, 1) {
+  const gaddr p = Arg(c, 0);
+  if (!p) return 0;
+  const size_t k = shlwapi::SkipRoot(GStr(p));
+  return k == std::string::npos ? 0 : p + gaddr(k);
+}
+// PathCanonicalizeA(dst, src): FALSE (with nothing written) for no buffers.
+HLE64("shlwapi.dll", PathCanonicalizeA, 2) {
+  const gaddr dst = Arg(c, 0), src = Arg(c, 1);
+  if (!dst || !src) return 0;
+  PutPath(dst, shlwapi::Canonicalize(GStr(src)));
+  return 1;
+}
+// PathCombineA(dst, dir, file): dst, or NULL when both inputs are NULL.
+HLE64("shlwapi.dll", PathCombineA, 3) {
+  const gaddr dst = Arg(c, 0), dir = Arg(c, 1), file = Arg(c, 2);
+  if (!dst) return 0;
+  if (!dir && !file) {
+    Wr8(dst, 0);
+    return 0;
+  }
+  PutPath(dst, shlwapi::Combine(dir ? GStr(dir) : std::string(), file ? GStr(file) : std::string()));
+  return dst;
+}
+
 // PathStripPathW(path): the file name part, in place.
 HLE("shlwapi.dll", PathStripPathW, 1) {
   const gaddr p = Arg(c, 0);
