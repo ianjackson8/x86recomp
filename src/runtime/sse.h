@@ -563,6 +563,27 @@ inline void Sub(Xmm& d, const Xmm& s) {
   for (int i = 0; i < int(16 / sizeof(T)); i++)
     SetLane<T>(d, i, T(Lane<T>(d, i) - Lane<T>(s, i)));
 }
+// PADDSB/W, PADDUSB/W, PSUBSB/W, PSUBUSB/W: each lane's exact sum or
+// difference clamped to T's range (T signed: signed saturation, T unsigned:
+// unsigned saturation).
+template <typename T>
+inline T SatLane(int32_t v) {
+  constexpr int32_t lo = int32_t(std::numeric_limits<T>::min());
+  constexpr int32_t hi = int32_t(std::numeric_limits<T>::max());
+  return T(v < lo ? lo : v > hi ? hi : v);
+}
+template <typename T>
+inline void AddSat(Xmm& d, const Xmm& s) {
+  static_assert(sizeof(T) <= 2, "saturating forms exist for bytes and words only");
+  for (int i = 0; i < int(16 / sizeof(T)); i++)
+    SetLane<T>(d, i, SatLane<T>(int32_t(Lane<T>(d, i)) + int32_t(Lane<T>(s, i))));
+}
+template <typename T>
+inline void SubSat(Xmm& d, const Xmm& s) {
+  static_assert(sizeof(T) <= 2, "saturating forms exist for bytes and words only");
+  for (int i = 0; i < int(16 / sizeof(T)); i++)
+    SetLane<T>(d, i, SatLane<T>(int32_t(Lane<T>(d, i)) - int32_t(Lane<T>(s, i))));
+}
 // PCMPGTB/W/D (signed lanes of type T).
 template <typename T>
 inline void CmpGt(Xmm& d, const Xmm& s) {

@@ -1968,6 +1968,21 @@ void InsnEmitter::EmitSse() {
       L(Fmt("::recomp::sse::Add<uint64_t>(%s, %s);", XmmRef(0).c_str(), s.c_str()));
       return;
     }
+    case ZYDIS_MNEMONIC_PADDSB: case ZYDIS_MNEMONIC_PADDSW: case ZYDIS_MNEMONIC_PADDUSB:
+    case ZYDIS_MNEMONIC_PADDUSW: case ZYDIS_MNEMONIC_PSUBSB: case ZYDIS_MNEMONIC_PSUBSW:
+    case ZYDIS_MNEMONIC_PSUBUSB: case ZYDIS_MNEMONIC_PSUBUSW: {
+      if (!IsXmm(0)) return Unimpl();
+      const bool add = m == ZYDIS_MNEMONIC_PADDSB || m == ZYDIS_MNEMONIC_PADDSW ||
+                       m == ZYDIS_MNEMONIC_PADDUSB || m == ZYDIS_MNEMONIC_PADDUSW;
+      const char* t = m == ZYDIS_MNEMONIC_PADDSB || m == ZYDIS_MNEMONIC_PSUBSB     ? "int8_t"
+                      : m == ZYDIS_MNEMONIC_PADDSW || m == ZYDIS_MNEMONIC_PSUBSW   ? "int16_t"
+                      : m == ZYDIS_MNEMONIC_PADDUSB || m == ZYDIS_MNEMONIC_PSUBUSB ? "uint8_t"
+                                                                                   : "uint16_t";
+      std::string s = src(1);
+      L(Fmt("::recomp::sse::%s<%s>(%s, %s);", add ? "AddSat" : "SubSat", t,
+            XmmRef(0).c_str(), s.c_str()));
+      return;
+    }
     case ZYDIS_MNEMONIC_PCMPEQB: case ZYDIS_MNEMONIC_PCMPEQW: case ZYDIS_MNEMONIC_PCMPEQD:
     case ZYDIS_MNEMONIC_PSUBB: case ZYDIS_MNEMONIC_PSUBW: case ZYDIS_MNEMONIC_PSUBD:
     case ZYDIS_MNEMONIC_PSUBQ: {
