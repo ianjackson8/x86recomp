@@ -152,6 +152,10 @@ struct GameConfig {
   struct LiftedDll {
     std::string name;   // file name, e.g. "game.dll"
     uint32_t base = 0;  // the lifter's --base for it; 0 = preferred base
+    // The file on the host when it is not in the game's folder (a system
+    // DLL the player supplies, e.g. from a redistributable); empty: the
+    // game's folder, guest_dir\name.
+    std::string host_path;
   };
   std::vector<LiftedDll> lifted_dlls;
   // The game's Steam app id, for the steam_api bridge (recomp_steam): it

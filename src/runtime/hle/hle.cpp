@@ -30,6 +30,23 @@ std::map<std::pair<std::string, std::string>, Def>& Registry() {
   return r;
 }
 
+// (dll, name) -> another DLL's export with the same behaviour (Alias).
+std::map<std::pair<std::string, std::string>, std::pair<std::string, std::string>>& Aliases() {
+  static std::map<std::pair<std::string, std::string>, std::pair<std::string, std::string>> r;
+  return r;
+}
+
+// The handler for an import: its own, or its alias's (resolved when the
+// import is bound, so libraries may register in any order).
+const Def* FindDef(const std::string& dll, const std::string& name) {
+  auto it = Registry().find({dll, name});
+  if (it != Registry().end()) return &it->second;
+  auto a = Aliases().find({dll, name});
+  if (a == Aliases().end()) return nullptr;
+  auto t = Registry().find(a->second);
+  return t == Registry().end() ? nullptr : &t->second;
+}
+
 // Real export tables of provided DLLs whose games fetch every entry point
 // up front (see Exports in hle.h).
 std::map<std::string, std::set<std::string>>& DeclaredExports() {
@@ -80,9 +97,7 @@ gaddr AddSlot(const std::string& dll, const std::string& name) {
       return ThunkBase() + uint32_t(i) * kThunkStride;
   if (g_slots.size() >= kMaxSlots) FatalF("thunk region exhausted");
   gaddr thunk = ThunkBase() + uint32_t(g_slots.size()) * kThunkStride;
-  auto it = Registry().find({dll, name});
-  g_slots.push_back({dll, name, it == Registry().end() ? nullptr : &it->second,
-                     dll == "ddraw.dll"});
+  g_slots.push_back({dll, name, FindDef(dll, name), dll == "ddraw.dll"});
   g_slot_table[g_slots.size() - 1].store(&g_slots.back(),
                                          std::memory_order_release);
   return thunk;
@@ -118,6 +133,10 @@ gaddr DataAddress(const std::string& dll, const std::string& name) {
 
 }  // namespace
 
+Alias::Alias(const char* dll, const char* name, const char* to_dll, const char* to_name) {
+  Aliases()[{dll, name}] = {to_dll, to_name};
+}
+
 Registrar::Registrar(const char* dll, const char* name, int nargs, Fn fn, bool x64, bool x86) {
   Registry()[{dll, name}] = Def{nargs, fn, x64, x86};
 }
@@ -149,7 +168,7 @@ std::string NormaliseDll(std::string dll) {
 gaddr ImportThunk(const std::string& dll, const std::string& name) {
   std::string n = NormaliseDll(dll);
   if (gaddr data = DataAddress(n, name)) return data;
-  if (!Registry().count({n, name}))
+  if (!FindDef(n, name))
     RECOMP_TRACE("hle: import %s!%s has no handler\n", n.c_str(), name.c_str());
   return AddSlot(n, name);
 }
@@ -270,7 +289,7 @@ gaddr ProcAddress(gaddr hmodule, const std::string& name) {
   if (hmodule < ModuleRegion() || idx >= k.size()) return 0;
   if (gaddr data = DataAddress(k[idx], name)) return data;
   const std::string& dll = k[idx];
-  if (!Registry().count({dll, name})) {
+  if (!FindDef(dll, name)) {
     auto ex = DeclaredExports().find(dll);
     if (ex != DeclaredExports().end() && ex->second.count(name))
       return AddSlot(dll, name);  // a real export; fatal if ever called

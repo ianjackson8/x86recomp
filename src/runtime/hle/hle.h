@@ -48,6 +48,12 @@ struct Def {
   bool x86 = true;  // audited for 32-bit guests (all but HLE64_ONLY)
 };
 
+// An import with the same behaviour as another DLL's export (one C library's
+// function exported by another): bound to that export's handler.
+struct Alias {
+  Alias(const char* dll, const char* name, const char* to_dll, const char* to_name);
+};
+
 struct Registrar {
   Registrar(const char* dll, const char* name, int nargs, Fn fn, bool x64 = false,
             bool x86 = true);
