@@ -652,7 +652,9 @@ HLE("gdi32.dll", GetGlyphIndicesW, 5) {
 // TT_POLYGON_TYPE (24), pfxStart} then TTPOLYCURVEs {wType, cpfx,
 // POINTFX[cpfx]}: TT_PRIM_LINE (1) runs of lines, TT_PRIM_QSPLINE (2) a
 // quadratic (control, end), TT_PRIM_CSPLINE (3) a cubic (two controls,
-// end); GGO_BEZIER has lines and cubics only (quadratics raised). Points
+// end). GGO_NATIVE is TrueType's form, lines and quadratics: a cubic
+// (CFF/OpenType faces) becomes four quadratics, as GDI approximates them;
+// GGO_BEZIER has lines and cubics only (quadratics raised). Points
 // are 16.16 fixed (FIXED: fract, value), pixels, y up from the pen. A
 // contour that does not end at its start gets the closing line written
 // out: GDI's polygons close implicitly, but some readers (a SWF player's
@@ -727,7 +729,33 @@ uint32_t GlyphOutlineData(const host_font::Font& f, uint16_t glyph, bool bezier,
         break;
       case host_font::Font::PathElem::kCubic:
         run = SIZE_MAX;
-        curve(3, e.pts, 3);
+        if (bezier) {
+          curve(3, e.pts, 3);
+        } else {
+          // Four pieces (t = 0, 1/4, .., 1), each a quadratic whose control
+          // point is (3 (c1 + c2) - p0 - p3) / 4 of the piece.
+          const float x[4] = {px, e.pts[0], e.pts[2], e.pts[4]};
+          const float y[4] = {py, e.pts[1], e.pts[3], e.pts[5]};
+          auto at = [&](const float* v, float t, float* p0, float* d) {
+            const float u = 1 - t;
+            *p0 = u * u * u * v[0] + 3 * u * u * t * v[1] + 3 * u * t * t * v[2] + t * t * t * v[3];
+            *d = 3 * (u * u * (v[1] - v[0]) + 2 * u * t * (v[2] - v[1]) + t * t * (v[3] - v[2]));
+          };
+          for (int k = 0; k < 4; k++) {
+            const float t0 = k / 4.0f, t1 = (k + 1) / 4.0f, h = t1 - t0;
+            float ax, ay, adx, ady, bx, by, bdx, bdy;
+            at(x, t0, &ax, &adx);
+            at(y, t0, &ay, &ady);
+            at(x, t1, &bx, &bdx);
+            at(y, t1, &by, &bdy);
+            // The piece's cubic controls: a + d0 h / 3 and b - d1 h / 3.
+            const float c1x = ax + adx * h / 3, c1y = ay + ady * h / 3;
+            const float c2x = bx - bdx * h / 3, c2y = by - bdy * h / 3;
+            const float q[4] = {(3 * (c1x + c2x) - ax - bx) / 4, (3 * (c1y + c2y) - ay - by) / 4,
+                                k == 3 ? x[3] : bx, k == 3 ? y[3] : by};
+            curve(2, q, 2);
+          }
+        }
         px = e.pts[4];
         py = e.pts[5];
         break;
