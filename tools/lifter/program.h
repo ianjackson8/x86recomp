@@ -74,6 +74,9 @@ struct Program {
   const FlagLiveness* flags = nullptr;
   // --flags-check: check the analysis as the game runs (lifted.h).
   bool flags_check = false;
+  // --split-above N: functions of more than N instructions are emitted as
+  // parts of about N/2 (0: never). See Emitter::EmitFunction.
+  size_t split_above = 0;
 
   // Maps an image (at `base`, 0 for its preferred base) and reads its
   // symbols. The first one is the EXE.

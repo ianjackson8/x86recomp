@@ -322,6 +322,23 @@ lifter is tractable (rexglue-style: one C++ function per guest function).
     a frame of its own or that no deeper function with the same EBP also
     catches; an FPO setjmp caller inherits its caller's EBP. Calls to
     setjmp through a pointer are not recognised.
+- Very large functions (`--split-above N`, off by default): a guest
+  function of ~100k instructions (seen in a D3DX9 DLL's shader compiler)
+  is over 1 MiB of arm64 code as one C++ function. Its conditional
+  branches stop reaching ("fixup value out of range"), and passes
+  super-linear in a function's size (GlobalISel's CSE at -O0, branch
+  relaxation) run for hours. Functions of more than N instructions are
+  emitted as parts of about N/2: `f_X` sets `f_X_at` (a per-thread
+  variable of the function's own) to the entry and tail-calls the part
+  holding it; each part loads the registers from Ctx (LIFT_ENTER) and
+  switches on `f_X_at` to the label. A jump into another part spills
+  everything (LIFT_SPILL, all flags), sets `f_X_at` and tail-calls that
+  part. Parts start only at labels outside manifest hooks, so no x87
+  run, fused compare+jcc or hook spans two. Functions with a try block
+  (SEH frames, setjmp callers, x64 language handlers) are never split:
+  no guaranteed tail call leaves a try block. Straight-line code has no
+  labels to cut at and stays whole. With the option off the output is
+  unchanged.
 - Oracle tests (dev-time only): every x87 and integer instruction form
   found in a game EXE is run lifted and natively from the same random
   state (tests/lift_*_test.cpp, `recomp_add_lift_tests`).

@@ -42,6 +42,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <cstring>
 #include <set>
 #include <string>
 #include <vector>
@@ -109,6 +110,7 @@ int main(int argc, char** argv) {
   std::string x87_test, int_test, sse_test, flags_test;
   std::set<uint64_t> only;
   bool all_flags = false, flags_check = false, flags_table = false;
+  size_t split_above = 0;
   std::set<uint64_t> flags_dump;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -120,6 +122,7 @@ int main(int argc, char** argv) {
     else if (a == "--base") mods.back().base = std::stoull(val(), nullptr, 16);
     else if (a == "--out") outdir = val();
     else if (a == "--insns-per-file") per_file = std::stoull(val());
+    else if (a == "--split-above") split_above = std::stoull(val());
     else if (a == "--dump") dump = std::stoull(val(), nullptr, 16);
     else if (a == "--all-flags") all_flags = true;
     else if (a == "--flags-check") flags_check = true;
@@ -408,6 +411,7 @@ int main(int argc, char** argv) {
     std::printf("%s", flags_report.substr(0, flags_report.find('\n') + 1).c_str());
   }
 
+  p.split_above = split_above;
   // Pass 2: final CFGs and emission.
   std::filesystem::create_directories(outdir);
   lifter::Emitter em(p, dec);
@@ -424,7 +428,9 @@ int main(int argc, char** argv) {
     uint64_t functions = 0, insns = 0;
   };
   std::map<const lifter::Module*, ModuleStats> per_module;
-  auto flush = [&]() {
+  // part > 0: a further part of a split function (--split-above), as
+  // <file>_<part>.cpp, so the files after it keep their numbers.
+  auto flush = [&](int part = 0) {
     if (body.empty()) return;
     std::string text = prologue;
     // Declare every referenced function, including ones defined later in
@@ -433,8 +439,11 @@ int main(int argc, char** argv) {
       text += "void " + lifter::FnName(r) + "(::recomp::Ctx& c);\n";
     text += "\n" + body + "}  // namespace recomp::gen\n";
     Shorten(text);
-    char num[16];
-    std::snprintf(num, sizeof num, "%03d.cpp", file_no++);
+    char num[24];
+    if (part)
+      std::snprintf(num, sizeof num, "%03d_%d.cpp", file_no, part);
+    else
+      std::snprintf(num, sizeof num, "%03d.cpp", file_no++);
     files[prefix + num] = std::move(text);
     body.clear();
     refs.clear();
@@ -461,6 +470,29 @@ int main(int argc, char** argv) {
     }
     uint64_t before = stats.insns;
     em.EmitFunction(f, &body, &refs, &stats);
+    // A split function's parts after the first each get a file of their own.
+    if (size_t at = body.find(lifter::kSplitFileMark); at != std::string::npos) {
+      std::string rest = body.substr(at);
+      body.resize(at + 1);
+      const std::set<uint64_t> fn_refs = refs;
+      std::string mark = lifter::kSplitFileMark;
+      std::vector<std::string> parts;
+      for (size_t q = 0; q < rest.size();) {
+        size_t nx = rest.find(mark, q + mark.size());
+        if (nx == std::string::npos) nx = rest.size();
+        parts.push_back(rest.substr(q + mark.size(), nx - q - mark.size()));
+        q = nx;
+      }
+      for (size_t k = 0; k < parts.size(); ++k) {
+        std::string pending = std::move(body);
+        std::set<uint64_t> pending_refs = std::move(refs);
+        body = std::move(parts[k]);
+        refs = fn_refs;
+        flush(int(k) + 1);
+        body = std::move(pending);
+        refs = std::move(pending_refs);
+      }
+    }
     file_insns += stats.insns - before;
     per_module[cur].functions++;
     per_module[cur].insns += stats.insns - before;

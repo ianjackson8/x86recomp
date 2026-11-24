@@ -20,6 +20,31 @@ thread_local bool t_in_try = false;
 // iteration).
 const char* TailAttr() { return t_in_try ? "" : "LIFT_MUSTTAIL "; }
 
+// Set while emitting a function split into parts (--split-above): where
+// each part starts, the one being emitted, and per part the VAs other
+// parts jump to (its entry switch).
+struct SplitState {
+  std::vector<uint64_t> starts;
+  size_t cur = 0;
+  std::string name;  // parts are <name>_p<k>
+  std::vector<std::set<uint64_t>> entries;
+  size_t PartOf(uint64_t va) const {
+    return size_t(std::upper_bound(starts.begin(), starts.end(), va) - starts.begin()) - 1;
+  }
+};
+thread_local SplitState* t_split = nullptr;
+// A jump to t that leaves the part being emitted (empty: it does not).
+std::string CrossPartJump(uint64_t t) {
+  if (!t_split) return {};
+  const size_t k = t_split->PartOf(t);
+  if (k == t_split->cur) return {};
+  t_split->entries[k].insert(t);
+  char buf[160];
+  std::snprintf(buf, sizeof buf, "{ LIFT_SPILL; %s_at = 0x%llXu; LIFT_MUSTTAIL return %s_p%zu(c); }",
+                t_split->name.c_str(), (unsigned long long)t, t_split->name.c_str(), k);
+  return buf;
+}
+
 __attribute__((format(printf, 1, 2))) std::string Fmt(const char* f, ...) {
   char buf[512];
   va_list ap;
@@ -642,6 +667,7 @@ class InsnEmitter {
     if (!f_.insns.count(t))  // target outside .text: never decoded
       return Fmt("{ LIFT_SPILL; ::recomp::BadJump(c, %s, %s); }",
                  Hex(in_.va).c_str(), Hex(t).c_str());
+    if (std::string x = CrossPartJump(t); !x.empty()) return x;
     return Fmt("goto L_%08llX;", U(t));
   }
   void Push32(const std::string& v) {
@@ -3247,6 +3273,8 @@ void InsnEmitter::Emit() {
 
 std::string FnName(uint64_t va) { return Fmt("f_%08llX", U(va)); }
 
+const char* const kSplitFileMark = "\n// @@recomp-split-file@@\n";
+
 void Emitter::EmitFunction(const Function& f, std::string* out,
                            std::set<uint64_t>* refs, EmitStats* stats) {
   std::string& o = *out;
@@ -3255,9 +3283,7 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
   // A replaced function keeps its lifted body under another name, for the
   // replacement to call or be diffed against; every call site still
   // reaches f_X, which the game project defines.
-  o += "void " + FnName(f.entry) + (p_.replaced.count(f.entry) ? "_lifted" : "") +
-       "(::recomp::Ctx& c) {\n  LIFT_ENTER\n";
-  const size_t xmm_at = o.size();  // LIFT_XMM_ENTER goes here (32-bit)
+  const std::string fname = FnName(f.entry) + (p_.replaced.count(f.entry) ? "_lifted" : "");
   // Functions that register an SEH frame (write fs:[0]) can be resumed into
   // by their __except blocks, and setjmp callers by longjmp; see
   // GuestResume.
@@ -3276,17 +3302,6 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
       resumable = true;
   }
   t_in_try = resumable;
-  if (eh != p_.eh_frames.end()) o += "  uint64_t EF = 0;\n";
-  if (resumable) o += "  try {\n";
-  // Instructions are emitted in address order, so if the function also
-  // reaches code below its entry (shared tails, e.g. strstr jumping into
-  // strchr), execution must start with a jump to the entry.
-  if (!f.insns.empty() && f.insns.begin()->first != f.entry)
-    o += Fmt("  goto L_%08llX;\n", U(f.entry));
-  auto pr = p_.probes.find(f.entry);
-  if (pr != p_.probes.end())
-    o += Fmt("  LIFT_SPILL; ::recomp::Probe(c, 0x%llXu, \"%s\"); LIFT_RELOAD;\n",
-             U(f.entry), pr->second.c_str());
 
   // Labels: branch targets plus non-contiguous fallthroughs.
   std::set<uint64_t> labels = f.labels;
@@ -3318,10 +3333,54 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
     for (const auto& [va, end] : hooks) cut |= va <= r->second && end > r->first;
     r = cut ? runs.erase(r) : std::next(r);
   }
+
+  // --split-above: a function too big for the host compiler (one of ~100k
+  // instructions is over 1 MiB of arm64 code: branches inside it stop
+  // reaching, and passes super-linear in the function's size take hours)
+  // becomes parts of about split_above/2 instructions. Parts start at
+  // labels outside hooks, so no x87 run, fused compare+jcc or hook spans
+  // two. A jump into another part spills everything, records its target
+  // and tail-calls that part, whose entry reloads and switches
+  // on it (a per-thread variable of the function's own, f_X_at); f_X
+  // itself enters the part holding the entry the same way.
+  // Not for functions in a try block (no guaranteed tail call out of one).
+  SplitState split;
+  if (p_.split_above && f.insns.size() > p_.split_above && !resumable) {
+    const size_t target = std::max<size_t>(p_.split_above / 2, 256);
+    split.name = FnName(f.entry);
+    split.starts.push_back(f.insns.begin()->first);
+    size_t n = 0;
+    for (const auto& [va, in] : f.insns) {
+      if (++n < target || !labels.count(va)) continue;
+      bool in_hook = false;
+      for (const auto& [hv, he] : hooks) in_hook |= va > hv && va <= he;
+      if (in_hook) continue;
+      split.starts.push_back(va);
+      n = 0;
+    }
+    if (split.starts.size() < 2) split.starts.clear();
+  }
+  const bool splitting = !split.starts.empty();
+
+  auto pr = p_.probes.find(f.entry);
+  // The XMM registers a 32-bit body names: only those are loaded and spilled.
+  auto xmm_decl = [&](const std::string& b) {
+    unsigned mask = 0;
+    for (size_t q = b.find('X'); q != std::string::npos; q = b.find('X', q + 1))
+      if (q + 1 < b.size() && b[q + 1] >= '0' && b[q + 1] <= '7' &&
+          (q + 2 >= b.size() || !std::isalnum(uint8_t(b[q + 2]))) &&
+          (q == 0 || !(std::isalnum(uint8_t(b[q - 1])) || b[q - 1] == '_')))
+        mask |= 1u << (b[q + 1] - '0');
+    return Fmt("  constexpr unsigned kLiftXmm = 0x%02Xu;\n  LIFT_XMM_ENTER\n", mask);
+  };
+
+  // The instructions [first, last) as statements.
+  auto emit_body = [&](std::map<uint64_t, Insn>::const_iterator first,
+                       std::map<uint64_t, Insn>::const_iterator last, std::string& o) {
   uint64_t skip_until = 0;
   uint64_t fused_jcc = 0;  // a jcc emitted with the (U)COMIS before it
 
-  for (auto it = f.insns.begin(); it != f.insns.end(); ++it) {
+  for (auto it = first; it != last; ++it) {
     const Insn& in = it->second;
     if (labels.count(in.va)) o += Fmt("L_%08llX:\n", U(in.va));
     if (in.va < skip_until) continue;  // replaced by a hook
@@ -3350,17 +3409,17 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
       if (kill) o += Fmt("  FV |= 0x%03Xu;\n", kill);
     };
     if (run != runs.end()) {
-      auto last = f.insns.find(run->second);
+      auto last_in_run = f.insns.find(run->second);
       uint32_t use = 0, kill = 0;
       for (auto j = it;; ++j) {
         const FlagEffect fe = InsnFlags(j->second);
         use |= fe.use & ~kill;
         kill |= fe.kill;
-        if (j == last) break;
+        if (j == last_in_run) break;
       }
       flags_check(use, kill);
-      EmitX87Run(f, it, last, &o, refs, stats);
-      it = last;
+      EmitX87Run(f, it, last_in_run, &o, refs, stats);
+      it = last_in_run;
     } else {
       stats->insns++;
       if (in.ok && in.va != fused_jcc) {
@@ -3405,6 +3464,8 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
         refs->insert(nx);
         o += Fmt("  { %s; %sreturn %s(c); }\n", Spill(p_, ReadsOf(p_, nx)).c_str(),
                  TailAttr(), FnName(nx).c_str());
+      } else if (f.insns.count(nx) && !CrossPartJump(nx).empty()) {
+        o += "  " + CrossPartJump(nx) + "\n";
       } else if (ni == f.insns.end() || ni->first != nx) {
         o += f.insns.count(nx)
                  ? Fmt("  goto L_%08llX;\n", U(nx))
@@ -3413,6 +3474,64 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
       }
     }
   }
+  };
+
+  if (splitting) {
+    split.entries.resize(split.starts.size());
+    split.entries[split.PartOf(f.entry)].insert(f.entry);
+    std::vector<std::string> bodies(split.starts.size());
+    t_split = &split;
+    for (size_t k = 0; k < split.starts.size(); ++k) {
+      split.cur = k;
+      auto first = f.insns.find(split.starts[k]);
+      auto last = k + 1 < split.starts.size() ? f.insns.find(split.starts[k + 1]) : f.insns.end();
+      emit_body(first, last, bodies[k]);
+    }
+    t_split = nullptr;
+    // The VA the next part entered starts at: set by the jump into it and
+    // read first thing there, so per thread is enough (no reentrancy).
+    // Each part goes in a file of its own (kSplitFileMark, main.cpp), so
+    // the parts compile in parallel: they and f_X_at have external linkage.
+    std::string decls;
+    for (size_t k = 0; k < split.starts.size(); ++k)
+      decls += Fmt("void %s_p%zu(::recomp::Ctx& c);\n", split.name.c_str(), k);
+    o += Fmt("thread_local uint64_t %s_at;\n", split.name.c_str()) + decls;
+    o += "void " + fname + "(::recomp::Ctx& c) {\n";
+    if (pr != p_.probes.end())
+      o += Fmt("  ::recomp::Probe(c, 0x%llXu, \"%s\");\n", U(f.entry), pr->second.c_str());
+    o += Fmt("  %s_at = 0x%llXu;\n  LIFT_MUSTTAIL return %s_p%zu(c);\n}\n", split.name.c_str(),
+             U(f.entry), split.name.c_str(), split.PartOf(f.entry));
+    for (size_t k = 0; k < split.starts.size(); ++k) {
+      if (k) {
+        o += kSplitFileMark;
+        o += Fmt("extern thread_local uint64_t %s_at;\n", split.name.c_str()) + decls;
+      }
+      o += Fmt("void %s_p%zu(::recomp::Ctx& c) {\n  LIFT_ENTER\n", split.name.c_str(), k);
+      if (!p_.x64) o += xmm_decl(bodies[k]);
+      o += Fmt("  switch (%s_at) {\n", split.name.c_str());
+      for (uint64_t t : split.entries[k]) o += Fmt("    case 0x%llXu: goto L_%08llX;\n", U(t), U(t));
+      o += Fmt("    default: ::recomp::BadJump(c, 0x%llXu, uint32_t(%s_at));\n  }\n",
+               U(split.starts[k]), split.name.c_str());
+      o += bodies[k];
+      o += "}\n";
+    }
+    o += "\n";
+    return;
+  }
+
+  o += "void " + fname + "(::recomp::Ctx& c) {\n  LIFT_ENTER\n";
+  const size_t xmm_at = o.size();  // LIFT_XMM_ENTER goes here (32-bit)
+  if (eh != p_.eh_frames.end()) o += "  uint64_t EF = 0;\n";
+  if (resumable) o += "  try {\n";
+  // Instructions are emitted in address order, so if the function also
+  // reaches code below its entry (shared tails, e.g. strstr jumping into
+  // strchr), execution must start with a jump to the entry.
+  if (!f.insns.empty() && f.insns.begin()->first != f.entry)
+    o += Fmt("  goto L_%08llX;\n", U(f.entry));
+  if (pr != p_.probes.end())
+    o += Fmt("  LIFT_SPILL; ::recomp::Probe(c, 0x%llXu, \"%s\"); LIFT_RELOAD;\n",
+             U(f.entry), pr->second.c_str());
+  emit_body(f.insns.begin(), f.insns.end(), o);
   if (resumable)
     o += std::string("  } catch (const ::recomp::GuestResume& r) {\n") +
          (p_.x64 ? "    if (r.ebp != EF) throw;  // another activation's frame\n"
@@ -3421,16 +3540,7 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
          "    return;\n"
          "  }\n";
   o += "}\n\n";
-  if (!p_.x64) {
-    // The XMM registers the body names: only those are loaded and spilled.
-    unsigned mask = 0;
-    for (size_t p = o.find('X', xmm_at); p != std::string::npos; p = o.find('X', p + 1))
-      if (p + 1 < o.size() && o[p + 1] >= '0' && o[p + 1] <= '7' &&
-          (p + 2 >= o.size() || !std::isalnum(uint8_t(o[p + 2])) ) &&
-          (p == 0 || !(std::isalnum(uint8_t(o[p - 1])) || o[p - 1] == '_')))
-        mask |= 1u << (o[p + 1] - '0');
-    o.insert(xmm_at, Fmt("  constexpr unsigned kLiftXmm = 0x%02Xu;\n  LIFT_XMM_ENTER\n", mask));
-  }
+  if (!p_.x64) o.insert(xmm_at, xmm_decl(o.substr(xmm_at)));
 }
 
 // Non-x87 instructions that may sit inside an x87 run: anything straight-

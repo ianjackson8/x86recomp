@@ -19,6 +19,10 @@ struct EmitStats {
 
 std::string FnName(uint64_t va);
 
+// Between the parts of a split function (--split-above) in an emitted body:
+// the file being written ends there and the next part starts a new one.
+extern const char* const kSplitFileMark;
+
 class Emitter {
  public:
   Emitter(const Program& p, const Decoder& dec) : p_(p), dec_(dec) {}
