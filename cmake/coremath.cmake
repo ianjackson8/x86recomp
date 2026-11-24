@@ -1,5 +1,5 @@
-# CORE-MATH (MIT): correctly rounded elementary functions, behind the x64
-# CRT's math imports (src/runtime/hle/ucrt.cpp). Correct rounding makes the
+# CORE-MATH (MIT): correctly rounded elementary functions, behind the CRTs'
+# math imports (src/runtime/hle/ucrt.cpp: the UCRT's and msvcrt's). Correct rounding makes the
 # results the same on every host and compiler, which neither the host libm
 # (glibc and Apple's differ) nor a port of the UCRT's own (not correctly
 # rounded) would give; see ARCHITECTURE.md, "64-bit guests". Only the
@@ -17,8 +17,9 @@ set(COREMATH_FUNCTIONS
   binary32/atan2/atan2f binary32/cos/cosf binary32/log/logf
   binary32/log2/log2f binary32/log10/log10f binary32/pow/powf
   binary32/sin/sinf binary32/tan/tanf
-  binary64/atan/atan binary64/cos/cos binary64/exp/exp binary64/log/log
-  binary64/pow/pow binary64/sin/sin)
+  binary64/acos/acos binary64/asin/asin binary64/atan/atan binary64/atan2/atan2
+  binary64/cos/cos binary64/exp/exp binary64/log/log binary64/log10/log10
+  binary64/pow/pow binary64/sin/sin binary64/tan/tan)
 set(_coremath_sources "")
 foreach(f IN LISTS COREMATH_FUNCTIONS)
   list(APPEND _coremath_sources "${coremath_SOURCE_DIR}/src/${f}.c")
