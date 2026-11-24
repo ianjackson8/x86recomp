@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <climits>
 #include <cmath>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -1243,7 +1244,8 @@ float cr_acosf(float), cr_asinf(float), cr_atanf(float), cr_atan2f(float, float)
     cr_cosf(float), cr_logf(float), cr_log2f(float), cr_log10f(float),
     cr_powf(float, float), cr_sinf(float), cr_tanf(float);
 double cr_atan(double), cr_cos(double), cr_exp(double), cr_log(double),
-    cr_pow(double, double), cr_sin(double);
+    cr_pow(double, double), cr_sin(double), cr_acos(double), cr_asin(double),
+    cr_atan2(double, double), cr_tan(double), cr_log10(double);
 }
 
 namespace {
@@ -1293,6 +1295,40 @@ HLE64_ONLY("ucrtbase.dll", pow, kCdecl) {
 // ---- math with exact results (the same on every IEEE host) ---------------
 
 HLE64_ONLY("ucrtbase.dll", sqrt, kCdecl) { return RetD(c, std::sqrt(ArgD(c, 0))); }
+
+// The 32-bit CRT's SSE2 maths helpers (/arch:SSE2 code calls them for
+// sin, pow, ...): the argument in xmm0's low double (pow: x in xmm0, y in
+// xmm1), the result in xmm0's low double; its upper half and the stack
+// are left as they are. Correctly rounded (CORE-MATH), as the cdecl forms.
+namespace {
+double XmmD(const Ctx& c, int i) {
+  double v;
+  std::memcpy(&v, c.xmm[i].data(), 8);
+  return v;
+}
+uint64_t SetXmm0D(Ctx& c, double v) {
+  std::memcpy(c.xmm[0].data(), &v, 8);
+  return 0;
+}
+}  // namespace
+#define RECOMP_LIBM_SSE2(name, expr)                                              \
+  HLE("ucrtbase.dll", _libm_sse2_##name##_precise, kCdecl) {                      \
+    const double x = XmmD(c, 0);                                                  \
+    (void)x;                                                                      \
+    return SetXmm0D(c, WithErrno<double>([&] { return expr; }));                 \
+  }
+RECOMP_LIBM_SSE2(acos, cr_acos(x))
+RECOMP_LIBM_SSE2(asin, cr_asin(x))
+RECOMP_LIBM_SSE2(atan, cr_atan(x))
+RECOMP_LIBM_SSE2(cos, cr_cos(x))
+RECOMP_LIBM_SSE2(sin, cr_sin(x))
+RECOMP_LIBM_SSE2(tan, cr_tan(x))
+RECOMP_LIBM_SSE2(exp, cr_exp(x))
+RECOMP_LIBM_SSE2(log, cr_log(x))
+RECOMP_LIBM_SSE2(log10, cr_log10(x))
+RECOMP_LIBM_SSE2(sqrt, std::sqrt(x))
+RECOMP_LIBM_SSE2(pow, cr_pow(x, XmmD(c, 1)))
+#undef RECOMP_LIBM_SSE2
 HLE64_ONLY("ucrtbase.dll", sqrtf, kCdecl) { return RetF(c, std::sqrt(ArgF(c, 0))); }
 HLE64("ucrtbase.dll", ceil, kCdecl) { return RetD(c, std::ceil(ArgD(c, 0))); }
 HLE64_ONLY("ucrtbase.dll", ceilf, kCdecl) { return RetF(c, std::ceil(ArgF(c, 0))); }
@@ -1342,5 +1378,280 @@ HLE64_ONLY("ucrtbase.dll", _dclass, kCdecl) { return Class(ArgD(c, 0)); }
 HLE64_ONLY("ucrtbase.dll", _ldclass, kCdecl) { return Class(ArgD(c, 0)); }
 HLE64_ONLY("ucrtbase.dll", _fdclass, kCdecl) { return Class(ArgF(c, 0)); }
 HLE64_ONLY("ucrtbase.dll", _dsign, kCdecl) { return std::signbit(ArgD(c, 0)) ? 0x8000 : 0; }
+
+// ---- msvcrt.dll: the system C library older DLLs import --------------------------
+// (A redistributable middleware DLL built against it, for one.) What behaves
+// as the UCRT's/VCRUNTIME's does is an alias of that handler; the rest of
+// msvcrt's own protocol is here. Unlisted functions fail by name.
+
+#define RECOMP_MSVCRT_ALIAS(name, dll) \
+  static const Alias RECOMP_HLE_CAT(msvcrt_alias_, name){"msvcrt.dll", #name, dll, #name};
+RECOMP_MSVCRT_ALIAS(_initterm, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(malloc, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(free, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(calloc, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(realloc, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(_strdup, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(_stricmp, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(strtod, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(atof, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(atoi, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(_itoa, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(_isnan, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(floor, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(ceil, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(ldexp, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(qsort, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(rand, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(srand, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(isalnum, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(isalpha, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(isdigit, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(isspace, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(isxdigit, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(iswdigit, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(iswspace, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(wcstombs, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(_errno, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(exit, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(fflush, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(fread, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(fwrite, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(memcpy, "vcruntime140.dll")
+RECOMP_MSVCRT_ALIAS(memmove, "vcruntime140.dll")
+RECOMP_MSVCRT_ALIAS(memset, "vcruntime140.dll")
+RECOMP_MSVCRT_ALIAS(_purecall, "vcruntime140.dll")
+#undef RECOMP_MSVCRT_ALIAS
+static const Alias msvcrt_alias_terminate{"msvcrt.dll", "?terminate@@YAXXZ", "ucrtbase.dll",
+                                          "terminate"};
+
+// operator new / delete (msvcrt's own exports in older DLLs). A failed new
+// throws std::bad_alloc: fatal here (C++ exceptions are not modelled).
+HLE_NAMED("msvcrt.dll", "??2@YAPAXI@Z", MsvcrtNew, kCdecl) {
+  gaddr p = Malloc(Arg(c, 0));
+  if (!p) FatalF("guest operator new(%llu) failed (std::bad_alloc)", (unsigned long long)Arg(c, 0));
+  return p;
+}
+HLE_NAMED("msvcrt.dll", "??3@YAXPAX@Z", MsvcrtDelete, kCdecl) {
+  if (gaddr p = Arg(c, 0)) HeapFreeProcess(p);
+  return 0;
+}
+
+// _onexit(fn): the process's at-exit list (exit runs it), returns fn.
+HLE("msvcrt.dll", _onexit, kCdecl) {
+  RegisterOnExit(AtExitTable(), Arg(c, 0));
+  return Arg(c, 0);
+}
+// __dllonexit(fn, &begin, &end): a DLL's own at-exit array [*begin, *end)
+// (its CRT runs it on DLL_PROCESS_DETACH) grows by fn; returns fn.
+HLE("msvcrt.dll", __dllonexit, kCdecl) {
+  const gaddr fn = Arg(c, 0), pbegin = Arg(c, 1), pend = Arg(c, 2);
+  std::lock_guard<std::mutex> l(g_onexit_mu);
+  const gaddr begin = Rd32(pbegin), end = Rd32(pend);
+  const uint32_t n = begin ? (end - begin) / 4 : 0;
+  const gaddr grown = begin ? HeapReAllocProcess(begin, 4 * (n + 1)) : HeapAllocProcess(4 * (n + 1), true);
+  if (!grown) return 0;
+  Wr32(grown + 4 * n, uint32_t(fn));
+  Wr32(pbegin, uint32_t(grown));
+  Wr32(pend, uint32_t(grown + 4 * (n + 1)));
+  return fn;
+}
+// The startup code's filter for exceptions: none is handled there.
+HLE("msvcrt.dll", _XcptFilter, kCdecl) { return 0; }  // EXCEPTION_CONTINUE_SEARCH
+HLE("msvcrt.dll", _amsg_exit, kCdecl) {
+  FatalF("guest C runtime error R60%02u (_amsg_exit)", uint32_t(Arg(c, 0)));
+}
+HLE("msvcrt.dll", abort, kCdecl) { FatalF("guest called abort()"); }
+// A C++ exception reached a frame of an msvcrt-built DLL: 32-bit C++
+// exception handling is not modelled yet.
+HLE("msvcrt.dll", __CxxFrameHandler, kCdecl) {
+  FatalF("a guest C++ exception (__CxxFrameHandler): not supported yet");
+}
+
+// _lock/_unlock(n): msvcrt's internal locks, by number.
+namespace {
+std::recursive_mutex g_msvcrt_locks[64];
+}  // namespace
+HLE("msvcrt.dll", _lock, kCdecl) {
+  const uint32_t n = uint32_t(Arg(c, 0));
+  if (n >= 64) FatalF("msvcrt _lock(%u)", n);
+  g_msvcrt_locks[n].lock();
+  return 0;
+}
+HLE("msvcrt.dll", _unlock, kCdecl) {
+  const uint32_t n = uint32_t(Arg(c, 0));
+  if (n >= 64) FatalF("msvcrt _unlock(%u)", n);
+  g_msvcrt_locks[n].unlock();
+  return 0;
+}
+
+// _controlfp(new, mask): sets as _controlfp_s does, returns the bits after.
+HLE("msvcrt.dll", _controlfp, kCdecl) {
+  const uint32_t ctl = uint32_t(Arg(c, 0)), mask = uint32_t(Arg(c, 1));
+  uint16_t cw = x87::ControlWord(c.fpu);
+  uint32_t mxcsr = c.mxcsr;
+  fp::ToUnits(ctl, fp::ControlFpMask(mask & fp::kControlFpMask), &cw, &mxcsr);
+  x87::SetControlWord(c.fpu, cw);
+  c.mxcsr = mxcsr;
+  return fp::FromUnits(cw, mxcsr);
+}
+// _clearfp(): the exception flags (_SW_* bits) of the x87 and SSE, cleared.
+HLE("msvcrt.dll", _clearfp, kCdecl) {
+  const uint32_t sw = x87::StatusWord(c.fpu) | (c.mxcsr & 0x3F);
+  uint32_t r = 0;
+  if (sw & 0x01) r |= 0x10;     // invalid
+  if (sw & 0x02) r |= 0x80000;  // denormal
+  if (sw & 0x04) r |= 0x08;     // zero divide
+  if (sw & 0x08) r |= 0x04;     // overflow
+  if (sw & 0x10) r |= 0x02;     // underflow
+  if (sw & 0x20) r |= 0x01;     // inexact
+  x87::ClearExceptions(c.fpu);
+  c.mxcsr &= ~0x3Fu;
+  return r;
+}
+HLE("msvcrt.dll", _finite, kCdecl) { return std::isfinite(ArgD(c, 0)) ? 1 : 0; }
+
+// The x87 intrinsics (_CIsin, ...): the argument in st(0) (st(1) and st(0)
+// for two), popped; the result pushed. Computed correctly rounded in
+// double (CORE-MATH), where msvcrt used the x87's own instructions: they
+// can differ in the last bit of a double.
+namespace {
+double PopD(Ctx& c) {
+  uint64_t b = x87::StoreF64(c.fpu);
+  x87::Pop(c.fpu);
+  double v;
+  std::memcpy(&v, &b, 8);
+  return v;
+}
+uint64_t PushD(Ctx& c, double v) {
+  uint64_t b;
+  std::memcpy(&b, &v, 8);
+  x87::LoadF64(c.fpu, b);
+  return 0;
+}
+}  // namespace
+#define RECOMP_CI1(name, expr)                    \
+  HLE("msvcrt.dll", name, 0) {                    \
+    const double x = PopD(c);                     \
+    return PushD(c, WithErrno<double>([&] { return expr; })); \
+  }
+#define RECOMP_CI2(name, expr)                    \
+  HLE("msvcrt.dll", name, 0) {                    \
+    const double y = PopD(c), x = PopD(c);        \
+    return PushD(c, WithErrno<double>([&] { return expr; })); \
+  }
+RECOMP_CI1(_CIsin, cr_sin(x))
+RECOMP_CI1(_CIcos, cr_cos(x))
+RECOMP_CI1(_CItan, cr_tan(x))
+RECOMP_CI1(_CIasin, cr_asin(x))
+RECOMP_CI1(_CIacos, cr_acos(x))
+RECOMP_CI1(_CIatan, cr_atan(x))
+RECOMP_CI1(_CIexp, cr_exp(x))
+RECOMP_CI1(_CIlog, cr_log(x))
+RECOMP_CI1(_CIlog10, cr_log10(x))
+RECOMP_CI1(_CIsqrt, std::sqrt(x))
+RECOMP_CI2(_CIatan2, cr_atan2(x, y))
+RECOMP_CI2(_CIpow, cr_pow(x, y))
+RECOMP_CI2(_CIfmod, std::fmod(x, y))
+#undef RECOMP_CI1
+#undef RECOMP_CI2
+
+// modf(x, &ip) and frexp(x, &e): the double in two slots, then the pointer.
+HLE_NAMED("msvcrt.dll", "modf", MsvcrtModf, kCdecl) {
+  double ip;
+  const double f = std::modf(ArgD(c, 0), &ip);
+  uint64_t b;
+  std::memcpy(&b, &ip, 8);
+  Wr64(Arg(c, 2), b);
+  return RetD(c, f);
+}
+HLE_NAMED("msvcrt.dll", "frexp", MsvcrtFrexp, kCdecl) {
+  int e;
+  const double m = std::frexp(ArgD(c, 0), &e);
+  Wr32(Arg(c, 2), uint32_t(e));
+  return RetD(c, m);
+}
+HLE_NAMED("msvcrt.dll", "atol", MsvcrtAtol, kCdecl) {
+  long long v = std::strtoll(S(Arg(c, 0)), nullptr, 10);
+  return uint32_t(int32_t(v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : v));
+}
+HLE("msvcrt.dll", _ultoa, kCdecl) {
+  const uint32_t v = uint32_t(Arg(c, 0));
+  const int radix = int(Arg(c, 2));
+  if (radix < 2 || radix > 36) FatalF("guest CRT: invalid parameter (_ultoa radix %d)", radix);
+  std::string r;
+  uint32_t u = v;
+  do {
+    uint32_t d = u % uint32_t(radix);
+    r.insert(r.begin(), char(d < 10 ? '0' + d : 'a' + d - 10));
+    u /= uint32_t(radix);
+  } while (u);
+  PutStr(Arg(c, 1), r);
+  return Arg(c, 1);
+}
+// The single-byte code page a program starts with: no lead bytes.
+HLE("msvcrt.dll", isleadbyte, kCdecl) { return 0; }
+HLE("msvcrt.dll", iswalpha, kCdecl) {
+  const uint32_t ch = uint32_t(Arg(c, 0)) & 0xFFFF;
+  if (ch == 0xFFFF) return 0;
+  if (ch >= 0x80) FatalF("guest CRT: iswalpha(U+%04X): non-ASCII classes not modelled yet", ch);
+  return std::isalpha(int(ch)) ? 1 : 0;
+}
+HLE("msvcrt.dll", iswpunct, kCdecl) {
+  const uint32_t ch = uint32_t(Arg(c, 0)) & 0xFFFF;
+  if (ch == 0xFFFF) return 0;
+  if (ch >= 0x80) FatalF("guest CRT: iswpunct(U+%04X): non-ASCII classes not modelled yet", ch);
+  return std::ispunct(int(ch)) ? 1 : 0;
+}
+// wctomb(dst, wc): the "C" locale's byte for wc (0-255), else -1 and EILSEQ.
+HLE("msvcrt.dll", wctomb, kCdecl) {
+  const uint32_t wc = uint32_t(Arg(c, 1)) & 0xFFFF;
+  if (!Arg(c, 0)) return 0;  // no shift state
+  if (wc > 0xFF) {
+    SetErrno(42);
+    return uint32_t(-1);
+  }
+  Wr8(Arg(c, 0), uint8_t(wc));
+  return 1;
+}
+// setlocale(category, name): only the "C" locale exists. A query or "C"
+// (or "") gets "C"; another locale is not available (NULL).
+HLE("msvcrt.dll", setlocale, kCdecl) {
+  static gaddr c_name = 0;
+  if (!c_name) {
+    c_name = HeapAllocProcess(2, false);
+    PutStr(c_name, "C");
+  }
+  if (!Arg(c, 1)) return c_name;
+  const std::string n = S(Arg(c, 1));
+  return n == "C" ? c_name : 0;
+}
+// _strdate/_strtime(buf): "MM/DD/YY" / "HH:MM:SS", local time.
+HLE("msvcrt.dll", _strdate, kCdecl) {
+  std::time_t now = std::time(nullptr);
+  std::tm t{};
+  localtime_r(&now, &t);
+  char b[9];
+  std::snprintf(b, sizeof b, "%02d/%02d/%02d", t.tm_mon + 1, t.tm_mday, t.tm_year % 100);
+  PutStr(Arg(c, 0), b);
+  return Arg(c, 0);
+}
+HLE("msvcrt.dll", _strtime, kCdecl) {
+  std::time_t now = std::time(nullptr);
+  std::tm t{};
+  localtime_r(&now, &t);
+  char b[9];
+  std::snprintf(b, sizeof b, "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+  PutStr(Arg(c, 0), b);
+  return Arg(c, 0);
+}
+
+// msvcrt's data: the FILE array behind stdin/stdout/stderr (_iob, 32-byte
+// FILEs) and the low-level I/O tables (__pioinfo, __badioinfo). Zeroed;
+// code that walks them directly is not expected and would fail on the
+// streams' functions, by name.
+static const DataExport msvcrt_iob{"msvcrt.dll", "_iob", 3 * 32};
+static const DataExport msvcrt_pioinfo{"msvcrt.dll", "__pioinfo", 64 * 4};
+static const DataExport msvcrt_badioinfo{"msvcrt.dll", "__badioinfo", 64};
 
 }  // namespace recomp::hle

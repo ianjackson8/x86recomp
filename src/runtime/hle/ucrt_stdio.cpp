@@ -518,6 +518,23 @@ HLE64("ucrtbase.dll", __stdio_common_vfwprintf, kCdecl) { return VFwprintf(c, fa
 HLE64("ucrtbase.dll", __stdio_common_vfwprintf_s, kCdecl) { return VFwprintf(c, false); }
 HLE64("ucrtbase.dll", __stdio_common_vfwprintf_p, kCdecl) { return VFwprintf(c, true); }
 
+// ---- msvcrt's printf family ----------------------------------------------------------
+// The legacy rules (PutFormatted without the standard-snprintf option): no
+// NUL when the text fills the buffer exactly, -1 when it does not fit.
+// cdecl; the variadic forms take their arguments after the format.
+HLE("msvcrt.dll", _vsnprintf, kCdecl) {
+  std::string s = Format(GStr(Arg(c, 2)), Args{Arg(c, 3)}, true);
+  return PutFormatted(0, Arg(c, 0), Arg(c, 1), s);
+}
+HLE("msvcrt.dll", _snprintf, kCdecl) {
+  std::string s = Format(GStr(Arg(c, 2)), Args{c.esp + 4 + 12}, true);
+  return PutFormatted(0, Arg(c, 0), Arg(c, 1), s);
+}
+HLE("msvcrt.dll", _vsnwprintf, kCdecl) {
+  std::u16string s = FormatCore(GWStr(Arg(c, 2)), Args{Arg(c, 3)}, true, true);
+  return PutFormattedW(0, Arg(c, 0), Arg(c, 1), s);
+}
+
 // ---- streams --------------------------------------------------------------------
 
 namespace {
