@@ -300,11 +300,84 @@ bool RecoverJumpTable64(const Program& p, const Function& f, const Insn& jmp,
   return unbounded();
 }
 
+// A switch on a loop counter needs no bounds check: `xor eI, eI` before
+// the loop, `inc eI; cmp eI, N; jl/jb/jne back` closing it, and the table
+// has N entries (N + 1 for jle/jbe). Each entry must target the module's
+// text, as for a checked switch.
+bool LoopBoundedTable(const Program& p, const Function& f, const Insn& jmp,
+                      std::vector<uint64_t>* targets) {
+  const auto& m = jmp.ops[0];
+  const ZydisRegister r = Full(m.mem.index);
+  bool zeroed = false;
+  uint64_t cases = 0;
+  for (auto it = f.insns.begin(); it != f.insns.end(); ++it) {
+    const Insn& in = it->second;
+    if (!in.ok) continue;
+    const auto& o0 = in.ops[0];
+    const auto& o1 = in.ops[1];
+    const bool on_r = o0.type == ZYDIS_OPERAND_TYPE_REGISTER && Full(o0.reg.value) == r;
+    if (on_r && in.va < jmp.va &&
+        ((in.d.mnemonic == ZYDIS_MNEMONIC_XOR && o1.type == ZYDIS_OPERAND_TYPE_REGISTER &&
+          Full(o1.reg.value) == r) ||
+         (in.d.mnemonic == ZYDIS_MNEMONIC_MOV && o1.type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
+          o1.imm.value.u == 0)))
+      zeroed = true;
+    const bool step = on_r && (in.d.mnemonic == ZYDIS_MNEMONIC_INC ||
+                               (in.d.mnemonic == ZYDIS_MNEMONIC_ADD &&
+                                o1.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && o1.imm.value.u == 1));
+    if (!step) continue;
+    auto cmp = std::next(it);
+    if (cmp == f.insns.end() || cmp->first != in.next()) continue;
+    const Insn& c = cmp->second;
+    if (!c.ok || c.d.mnemonic != ZYDIS_MNEMONIC_CMP || c.ops[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        Full(c.ops[0].reg.value) != r || c.ops[1].type != ZYDIS_OPERAND_TYPE_IMMEDIATE)
+      continue;
+    auto br = std::next(cmp);
+    if (br == f.insns.end() || br->first != c.next()) continue;
+    const Insn& b = br->second;
+    if (!b.ok || b.ops[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE || !b.ops[0].imm.is_relative) continue;
+    const uint64_t back = b.next() + b.ops[0].imm.value.s;
+    if (back > jmp.va) continue;
+    const uint64_t n = c.ops[1].imm.value.u;
+    switch (b.d.mnemonic) {
+      case ZYDIS_MNEMONIC_JL: case ZYDIS_MNEMONIC_JB: case ZYDIS_MNEMONIC_JNZ: cases = n; break;
+      case ZYDIS_MNEMONIC_JLE: case ZYDIS_MNEMONIC_JBE: cases = n + 1; break;
+      default: continue;
+    }
+  }
+  if (!zeroed || cases == 0 || cases > 4096) return false;
+  const Module* mod = p.TextOf(jmp.va);
+  const uint32_t table = static_cast<uint32_t>(m.mem.disp.value);
+  if (p.TextOf(table) != mod || p.TextOf(table + 4 * cases - 1) != mod) return false;
+  targets->clear();
+  for (uint64_t i = 0; i < cases; i++) {
+    const uint64_t t = p.mem.read<uint32_t>(table + 4 * i);
+    if (p.TextOf(t) != mod) return false;
+    if (std::find(targets->begin(), targets->end(), t) == targets->end()) targets->push_back(t);
+  }
+  return true;
+}
+
+bool RecoverCheckedTable(const Program& p, const Function& f, const Insn& jmp,
+                         std::vector<uint64_t>* targets);
+
 }  // namespace
 
 bool RecoverJumpTable(const Program& p, const Function& f, const Insn& jmp,
                       std::vector<uint64_t>* targets) {
   if (p.x64) return RecoverJumpTable64(p, f, jmp, targets);
+  if (RecoverCheckedTable(p, f, jmp, targets)) return true;
+  const auto& m = jmp.ops[0];
+  return jmp.ok && jmp.d.mnemonic == ZYDIS_MNEMONIC_JMP && m.type == ZYDIS_OPERAND_TYPE_MEMORY &&
+         m.mem.base == ZYDIS_REGISTER_NONE && m.mem.index != ZYDIS_REGISTER_NONE &&
+         m.mem.scale == 4 && LoopBoundedTable(p, f, jmp, targets);
+}
+
+namespace {
+
+// A switch behind a bounds check (cmp eI, N; ja default).
+bool RecoverCheckedTable(const Program& p, const Function& f, const Insn& jmp,
+                         std::vector<uint64_t>* targets) {
   const auto& m = jmp.ops[0];
   if (!jmp.ok || jmp.d.mnemonic != ZYDIS_MNEMONIC_JMP ||
       m.type != ZYDIS_OPERAND_TYPE_MEMORY || m.mem.base != ZYDIS_REGISTER_NONE ||
@@ -401,6 +474,8 @@ bool RecoverJumpTable(const Program& p, const Function& f, const Insn& jmp,
   }
   return false;
 }
+
+}  // namespace
 
 void BuildFunction(const Program& p, const Decoder& dec, uint64_t entry,
                    Function* out) {
