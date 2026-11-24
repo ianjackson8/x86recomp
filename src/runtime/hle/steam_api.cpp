@@ -630,6 +630,49 @@ RECOMP_HTTP(ReleaseHTTPRequest, 1) {
 }
 #undef RECOMP_HTTP
 
+// ISteamUGC: the user's Workshop subscriptions.
+HLE_NAMED("steam_api.dll", "ISteamUGC::GetNumSubscribedItems", ISteamUGC_GetNumSubscribedItems, 0) {
+  return Self<ISteamUGC>(c)->GetNumSubscribedItems();
+}
+// GetSubscribedItems(ids, max): PublishedFileId_t (64-bit) each.
+HLE_NAMED("steam_api.dll", "ISteamUGC::GetSubscribedItems", ISteamUGC_GetSubscribedItems, 2) {
+  const uint32 max = uint32(Arg(c, 1));
+  std::vector<PublishedFileId_t> ids(max);
+  const uint32 n = Self<ISteamUGC>(c)->GetSubscribedItems(ids.data(), max);
+  for (uint32 i = 0; i < n && i < max; i++) Wr64(Arg(c, 0) + 8 * i, ids[i]);
+  return n;
+}
+// RequestUGCDetails(id, max_age_seconds): SteamUGCRequestUGCDetailsResult_t
+// through the call result.
+HLE_NAMED("steam_api.dll", "ISteamUGC::RequestUGCDetails", ISteamUGC_RequestUGCDetails, 3) {
+  return Ret64(c, Self<ISteamUGC>(c)->RequestUGCDetails(PublishedFileId_t(Arg64(c, 0, 0)),
+                                                        uint32(Arg(c, 2))));
+}
+// GetItemInstallInfo(id, &size, folder, folder_size, &timestamp): the
+// client's folder is a host path, given to the guest as its guest path (a
+// mount, GameConfig::mounts); one outside every mount is fatal, named.
+HLE_NAMED("steam_api.dll", "ISteamUGC::GetItemInstallInfo", ISteamUGC_GetItemInstallInfo, 6) {
+  uint64 size = 0;
+  uint32 stamp = 0;
+  char folder[4096] = {};
+  const bool ok = Self<ISteamUGC>(c)->GetItemInstallInfo(PublishedFileId_t(Arg64(c, 0, 0)), &size,
+                                                         folder, sizeof folder, &stamp);
+  if (Arg(c, 2)) Wr64(Arg(c, 2), size);
+  if (Arg(c, 5)) Wr32(Arg(c, 5), stamp);
+  const uint32 cap = uint32(Arg(c, 4));
+  if (ok && Arg(c, 3) && cap) {
+    const std::string g = GuestPathOf(folder);
+    if (g.empty())
+      FatalF("ISteamUGC::GetItemInstallInfo: Workshop folder %s is outside the game's mounts", folder);
+    const std::string s = g.substr(0, cap - 1);
+    std::memcpy(GPtr(Arg(c, 3)), s.c_str(), s.size() + 1);
+  }
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUGC::GetItemState", ISteamUGC_GetItemState, 2) {
+  return Self<ISteamUGC>(c)->GetItemState(PublishedFileId_t(Arg64(c, 0, 0)));
+}
+
 // ISteamRemoteStorage: Steam Cloud files, read and written by the client.
 #define RECOMP_RS(method, n) \
   HLE_NAMED("steam_api.dll", "ISteamRemoteStorage::" #method, ISteamRemoteStorage_##method, n)
@@ -660,6 +703,22 @@ RECOMP_RS(FileWrite, 3) {
   std::vector<uint8_t> buf(size_t(std::max(n, 0)));
   if (n > 0) std::memcpy(buf.data(), GPtr(Arg(c, 1)), size_t(n));
   return Self<ISteamRemoteStorage>(c)->FileWrite(GStr(Arg(c, 0)).c_str(), buf.data(), n) ? 1 : 0;
+}
+// UGCDownload(handle, priority): RemoteStorageDownloadUGCResult_t through
+// the call result. UGCRead(handle, buf, size, offset, action): what was
+// downloaded, through a host buffer. UGCHandle_t is 64-bit (two slots).
+RECOMP_RS(UGCDownload, 3) {
+  return Ret64(c, Self<ISteamRemoteStorage>(c)->UGCDownload(UGCHandle_t(Arg64(c, 0, 0)),
+                                                            uint32(Arg(c, 2))));
+}
+RECOMP_RS(UGCRead, 6) {
+  const int32 n = int32(Arg(c, 3));
+  if (n <= 0) return 0;
+  std::vector<uint8_t> buf(static_cast<size_t>(n));
+  const int32 got = Self<ISteamRemoteStorage>(c)->UGCRead(
+      UGCHandle_t(Arg64(c, 0, 0)), buf.data(), n, uint32(Arg(c, 4)), EUGCReadAction(Arg(c, 5)));
+  if (got > 0) std::memcpy(GPtr(Arg(c, 2)), buf.data(), size_t(got));
+  return uint32_t(got);
 }
 RECOMP_RS(FileForget, 1) {
   return Self<ISteamRemoteStorage>(c)->FileForget(GStr(Arg(c, 0)).c_str()) ? 1 : 0;

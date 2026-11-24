@@ -57,6 +57,21 @@ class Font {
   virtual GlyphMetrics Measure(uint16_t glyph) const = 0;
   // The glyph's black box as 8-bit coverage, rows top-down, box_w wide.
   virtual std::vector<uint8_t> Render(uint16_t glyph, const GlyphMetrics& m) const = 0;
+  // Kerning pairs from the face's legacy 'kern' table (format 0, horizontal:
+  // what GDI reads; faces with only GPOS kerning have none), as characters
+  // of the Basic Multilingual Plane and pixel amounts.
+  struct KernPair {
+    char16_t first, second;
+    int32_t amount;
+  };
+  virtual std::vector<KernPair> KerningPairs() const = 0;
+  // The glyph's outline in pixels, y up from the pen position: contours of
+  // lines and quadratic or cubic curves, each closed (back to its start).
+  struct PathElem {
+    enum Kind : uint8_t { kMove, kLine, kQuad, kCubic, kClose } kind;
+    float pts[6];  // the points the kind takes (x, y pairs), the end last
+  };
+  virtual std::vector<PathElem> Outline(uint16_t glyph) const = 0;
 };
 
 // The font for `d`, its face matched by family name (as GDI's
@@ -68,6 +83,9 @@ std::shared_ptr<const Font> Create(const Desc& d);
 // for this process (GDI's AddFontResourceEx(FR_PRIVATE)): the number of
 // faces it holds, 0 if it cannot be read. UnregisterFile undoes it.
 int RegisterFile(const std::string& host_path);
+// The family names of the faces available to Create (registered files
+// included).
+std::vector<std::u16string> FamilyNames();
 bool UnregisterFile(const std::string& host_path);
 
 }  // namespace recomp::host_font

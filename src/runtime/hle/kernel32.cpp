@@ -3,6 +3,8 @@
 // kernel32_file.cpp, kernel32_sync.cpp, kernel32_misc.cpp and
 // kernel32_seh.cpp.
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -290,21 +292,33 @@ gaddr ModuleHandleOf(gaddr name, bool wide) {
 HLE64("kernel32.dll", GetModuleHandleA, 1) { return ModuleHandleOf(Arg(c, 0), false); }
 HLE64("kernel32.dll", GetModuleHandleW, 1) { return ModuleHandleOf(Arg(c, 0), true); }
 
+// The file a module handle stands for: the EXE, a lifted DLL in the game
+// folder, or a DLL the runtime provides: where Windows' loader finds it, the
+// application folder when the install has that file (a redistributable DLL
+// shipped with the game), else the system folder. "" for an unknown handle.
+std::string ModuleFilePath(gaddr mod) {
+  if (!mod || mod == g_proc->img.image_base) return GuestExePath();
+  {
+    std::lock_guard<std::recursive_mutex> l(g_loader_mu);
+    if (Module* m = LoadedDllAt(mod))
+      return GuestGameDir() + "\\" + Game().lifted_dlls[size_t(m - g_proc->modules.data())].name;
+  }
+  const std::string dll = hle::ModuleName(mod);
+  if (dll.empty()) return {};
+  const std::string in_app = GuestGameDir() + "\\" + dll;
+  struct stat st;
+  if (stat(HostPath(in_app).c_str(), &st) == 0 && S_ISREG(st.st_mode)) return in_app;
+  return "C:\\Windows\\System32\\" + dll;
+}
+
 // GetModuleFileNameW: as GetModuleFileNameA, in WCHARs.
 HLE64("kernel32.dll", GetModuleFileNameW, 3) {
   gaddr mod = Arg(c, 0), buf = Arg(c, 1);
   uint32_t size = uint32_t(Arg(c, 2));
-  std::string path;
-  if (mod && mod != g_proc->img.image_base) {
-    std::lock_guard<std::recursive_mutex> l(g_loader_mu);
-    Module* m = LoadedDllAt(mod);
-    if (!m) {
-      SetLastError(kErrorModNotFound);
-      return 0;
-    }
-    path = GuestGameDir() + "\\" + Game().lifted_dlls[size_t(m - g_proc->modules.data())].name;
-  } else {
-    path = GuestExePath();
+  const std::string path = ModuleFilePath(mod);
+  if (path.empty()) {
+    SetLastError(kErrorModNotFound);
+    return 0;
   }
   if (!size) return 0;
   const std::u16string w = Widen(path.substr(0, size - 1));
@@ -316,16 +330,10 @@ HLE64("kernel32.dll", GetModuleFileNameW, 3) {
 HLE64("kernel32.dll", GetModuleFileNameA, 3) {
   gaddr mod = Arg(c, 0), buf = Arg(c, 1);
   uint32_t size = uint32_t(Arg(c, 2));
-  std::string path = GuestExePath();
-  if (mod && mod != g_proc->img.image_base) {
-    std::lock_guard<std::recursive_mutex> l(g_loader_mu);
-    Module* m = LoadedDllAt(mod);
-    if (!m) {
-      SetLastError(kErrorModNotFound);
-      return 0;
-    }
-    path = GuestGameDir() + "\\" +
-           Game().lifted_dlls[size_t(m - g_proc->modules.data())].name;
+  const std::string path = ModuleFilePath(mod);
+  if (path.empty()) {
+    SetLastError(kErrorModNotFound);
+    return 0;
   }
   if (!size) return 0;
   std::string s = path.substr(0, size - 1);

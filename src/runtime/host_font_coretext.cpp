@@ -103,6 +103,63 @@ class CtFont final : public Font {
     return m;
   }
 
+  std::vector<PathElem> Outline(uint16_t glyph) const override {
+    std::vector<PathElem> out;
+    CGPathRef path = CTFontCreatePathForGlyph(font_, CGGlyph(glyph), nullptr);
+    if (!path) return out;
+    CGPathApply(path, &out, [](void* ctx, const CGPathElement* e) {
+      auto* v = static_cast<std::vector<PathElem>*>(ctx);
+      PathElem p{};
+      int n = 0;
+      switch (e->type) {
+        case kCGPathElementMoveToPoint: p.kind = PathElem::kMove; n = 1; break;
+        case kCGPathElementAddLineToPoint: p.kind = PathElem::kLine; n = 1; break;
+        case kCGPathElementAddQuadCurveToPoint: p.kind = PathElem::kQuad; n = 2; break;
+        case kCGPathElementAddCurveToPoint: p.kind = PathElem::kCubic; n = 3; break;
+        case kCGPathElementCloseSubpath: p.kind = PathElem::kClose; break;
+      }
+      for (int i = 0; i < n; i++) {
+        p.pts[2 * i] = float(e->points[i].x);
+        p.pts[2 * i + 1] = float(e->points[i].y);
+      }
+      v->push_back(p);
+    });
+    CGPathRelease(path);
+    return out;
+  }
+
+  std::vector<KernPair> KerningPairs() const override {
+    std::vector<KernPair> out;
+    Table kern(font_, kCTFontTableKern);
+    if (kern.size() < 4 || kern.U16(0) != 0) return out;  // version 0 only (not Apple's 1.0)
+    // Characters per glyph: the first BMP character mapping to it.
+    std::u16string all;
+    for (uint32_t ch = 0x20; ch < 0x10000; ch++)
+      if (ch < 0xD800 || ch >= 0xE000) all.push_back(char16_t(ch));
+    std::vector<uint16_t> g(all.size());
+    Glyphs(all.data(), all.size(), g.data());
+    std::vector<char16_t> char_of(65536, 0);
+    for (size_t i = 0; i < all.size(); i++)
+      if (g[i] && !char_of[g[i]]) char_of[g[i]] = all[i];
+    const double k = CTFontGetSize(font_) / double(CTFontGetUnitsPerEm(font_));
+    size_t at = 4;
+    for (uint16_t t = 0, n = kern.U16(2); t < n && at + 6 <= kern.size(); t++) {
+      const uint16_t len = kern.U16(at + 2), coverage = kern.U16(at + 4);
+      if ((coverage >> 8) == 0 && (coverage & 1) && !(coverage & 0x4)) {  // format 0, horizontal, not cross-stream
+        const uint16_t pairs = kern.U16(at + 6);
+        for (uint32_t p = 0; p < pairs; p++) {
+          const size_t e = at + 14 + 6 * p;
+          if (e + 6 > kern.size()) break;
+          const char16_t a = char_of[kern.U16(e)], b = char_of[kern.U16(e + 2)];
+          if (a && b) out.push_back({a, b, int32_t(std::lround(kern.I16(e + 4) * k))});
+        }
+      }
+      if (!len) break;
+      at += len;
+    }
+    return out;
+  }
+
   std::vector<uint8_t> Render(uint16_t glyph, const GlyphMetrics& m) const override {
     std::vector<uint8_t> px(size_t(m.box_w) * m.box_h, 0);
     if (px.empty()) return px;
@@ -266,6 +323,16 @@ int RegisterFile(const std::string& host_path) {
   return faces;
 }
 
+std::vector<std::u16string> FamilyNames() {
+  std::vector<std::u16string> out;
+  if (CFArrayRef names = CTFontManagerCopyAvailableFontFamilyNames()) {
+    for (CFIndex i = 0; i < CFArrayGetCount(names); i++)
+      out.push_back(FromCf(static_cast<CFStringRef>(CFArrayGetValueAtIndex(names, i))));
+    CFRelease(names);
+  }
+  return out;
+}
+
 bool UnregisterFile(const std::string& host_path) {
   CFURLRef url = FileUrl(host_path);
   if (!url) return false;
@@ -289,6 +356,7 @@ int RegisterFile(const std::string&) {
   FatalF("host_font: no font engine on this host yet (AddFontResourceEx needs one)");
 }
 bool UnregisterFile(const std::string&) { return false; }
+std::vector<std::u16string> FamilyNames() { return {}; }
 }  // namespace recomp::host_font
 
 #endif

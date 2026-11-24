@@ -234,6 +234,18 @@ class Device {
   virtual TextureId CreateCubeTexture(int size, int levels, Format fmt) = 0;
   virtual void UpdateCubeTexture(TextureId t, int face, int level, const Rect& r,
                                  const void* src, uint32_t pitch) = 0;
+  // A volume (3D) texture, w x h x depth, filled a slice at a time with
+  // UpdateVolumeTexture and freed with DestroyTexture; samplers declared
+  // sampler3D read it. 0 from a backend without them.
+  virtual TextureId CreateVolumeTexture(int w, int h, int depth, int levels, Format fmt) {
+    (void)w, (void)h, (void)depth, (void)levels, (void)fmt;
+    return 0;
+  }
+  // `r` of slice `z` of mip `level` from linear memory (pitch in bytes).
+  virtual void UpdateVolumeTexture(TextureId t, int level, int z, const Rect& r, const void* src,
+                                   uint32_t pitch) {
+    (void)t, (void)level, (void)z, (void)r, (void)src, (void)pitch;
+  }
   virtual DepthId CreateDepth(int w, int h, Format fmt) = 0;
   // A depth-stencil buffer (D24S8) that shaders can also sample, Direct3D 9's
   // INTZ: the TextureId SetTexture binds (depth in every channel read) and,

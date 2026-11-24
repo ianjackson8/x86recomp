@@ -13,6 +13,7 @@
 // for that stage (FfVertexSource).
 
 #include <algorithm>
+#include <tuple>
 #include <array>
 #include <bit>
 #include <cstring>
@@ -127,6 +128,71 @@ std::vector<guest::D3DVERTEXELEMENT9> FvfElements(uint32_t fvf) {
   }
   e.push_back({0xFF, 0, UNUSED, 0, 0, 0});  // D3DDECL_END
   return e;
+}
+
+// The FVF whose layout a vertex declaration is (FvfElements of it gives
+// the same elements), or 0 if there is none: elements in stream 0 only,
+// position (XYZ, XYZW or XYZRHW), normal, point size, the two colours and
+// texture coordinates 0..n-1, at FVF offsets, no blending.
+uint32_t FvfOfDecl(const std::vector<guest::D3DVERTEXELEMENT9>& decl) {
+  uint32_t fvf = 0;
+  int ntex = 0;
+  uint32_t tex_formats = 0;
+  for (const auto& e : decl) {
+    if (e.Stream == 0xFF) break;
+    if (e.Stream != 0 || e.Method != 0) return 0;
+    switch (e.Usage) {
+      case USAGE_POSITION:
+        if (e.UsageIndex || (fvf & 0x400E)) return 0;
+        if (e.Type == FLOAT3) fvf |= 0x002;
+        else if (e.Type == FLOAT4) fvf |= 0x4002;
+        else return 0;
+        break;
+      case USAGE_POSITIONT:
+        if (e.UsageIndex || (fvf & 0x400E) || e.Type != FLOAT4) return 0;
+        fvf |= 0x004;
+        break;
+      case USAGE_NORMAL:
+        if (e.UsageIndex || e.Type != FLOAT3) return 0;
+        fvf |= 0x010;
+        break;
+      case USAGE_PSIZE:
+        if (e.UsageIndex || e.Type != FLOAT1) return 0;
+        fvf |= 0x020;
+        break;
+      case USAGE_COLOR:
+        if (e.UsageIndex > 1 || e.Type != D3DCOLOR) return 0;
+        fvf |= e.UsageIndex ? 0x080 : 0x040;
+        break;
+      case USAGE_TEXCOORD: {
+        if (e.UsageIndex >= 8 || e.Type < FLOAT1 || e.Type > FLOAT4) return 0;
+        static const uint32_t kBits[4] = {3, 0, 1, 2};  // FLOAT1..FLOAT4 -> D3DFVF_TEXCOORDSIZEn
+        tex_formats |= kBits[e.Type - FLOAT1] << (16 + 2 * e.UsageIndex);
+        ntex = std::max(ntex, int(e.UsageIndex) + 1);
+        break;
+      }
+      default:
+        return 0;  // blend weights and indices, tangents, ...
+    }
+  }
+  if (!(fvf & 0x400E)) return 0;
+  fvf |= uint32_t(ntex) << 8 | tex_formats;
+  // Same elements at the same offsets as the FVF's own layout.
+  auto key = [](const guest::D3DVERTEXELEMENT9& e) {
+    return std::tuple(e.Offset, e.Type, e.Usage, e.UsageIndex);
+  };
+  std::vector<std::tuple<uint16_t, uint8_t, uint8_t, uint8_t>> a, b;
+  for (const auto& e : decl) {
+    if (e.Stream == 0xFF) break;
+    a.push_back(key(e));
+  }
+  for (const auto& e : FvfElements(fvf)) {
+    if (e.Stream == 0xFF) break;
+    b.push_back(key(e));
+  }
+  std::sort(a.begin(), a.end());
+  std::sort(b.begin(), b.end());
+  return a == b ? fvf : 0;
 }
 
 // Vertices (or indices) a draw of `count` primitives uses.
@@ -317,26 +383,27 @@ void NoteFfVertexGaps(const Device& d, uint32_t fvf) {
   }
 }
 
-// The stand-in vertex shader for d.fvf (compiled once per source, found by
-// the state the source is made from) and its constants in `c`.
-const Device::FfVertexShader& FfVertexShaderFor(Device& d, float (*c)[4]) {
+// The stand-in vertex shader for `fvf` (d.fvf, or the FVF a declaration
+// is: FvfOfDecl), compiled once per source and found by the state the
+// source is made from, and its constants in `c`.
+const Device::FfVertexShader& FfVertexShaderFor(Device& d, uint32_t fvf, float (*c)[4]) {
   // What FfVertexSource reads: the FVF, and each stage's TEXCOORDINDEX and
   // TEXTURETRANSFORMFLAGS.
   std::array<uint32_t, 17> key;
-  key[0] = d.fvf;
+  key[0] = fvf;
   for (uint32_t s = 0; s < 8; s++) {
     key[1 + 2 * s] = d.tss[s][11];
     key[2 + 2 * s] = d.tss[s][24];
   }
   const Device::FfVertexShader*& found = d.ff_vs_by_state[key];
   if (!found) {
-    std::string src = FfVertexSource(d, d.fvf);
+    std::string src = FfVertexSource(d, fvf);
     auto it = d.ff_vs.find(src);
     if (it == d.ff_vs.end()) {
       auto p = std::make_shared<hlsl::Program>();
       std::string err;
       if (!hlsl::Compile(src, {}, "main", "vs_2_0", 0, p.get(), &err))
-        FatalF("d3d9: the fixed-function vertex shader for FVF %X does not translate: %s", d.fvf,
+        FatalF("d3d9: the fixed-function vertex shader for FVF %X does not translate: %s", fvf,
                err.c_str());
       Device::FfVertexShader v;
       v.id = d.gfx->CreateShader(*p);
@@ -345,7 +412,7 @@ const Device::FfVertexShader& FfVertexShaderFor(Device& d, float (*c)[4]) {
     }
     found = &it->second;
   }
-  NoteFfVertexGaps(d, d.fvf);
+  NoteFfVertexGaps(d, fvf);
   // World * View * Projection (row vectors), stored by column.
   static const std::array<float, 16> kIdentity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   auto get = [&](uint32_t t) {
@@ -559,6 +626,14 @@ const std::vector<gfx::VertexInput>& InputsFor(Device& d,
     l = &it->second;
     if (!fresh && l->Of(prog.get())) return l->inputs;
     elements = &decl->elements;
+    // The stand-in vertex shader (a declaration that is an FVF's layout)
+    // reads a pretransformed position as POSITION too.
+    if (ff) {
+      from_fvf = decl->elements;
+      for (auto& e : from_fvf)
+        if (e.Usage == USAGE_POSITIONT) e.Usage = USAGE_POSITION;
+      elements = &from_fvf;
+    }
   } else if (d.fvf) {
     if (d.fvf_layouts.size() >= kPruneLayoutsAt) PruneLayouts(d.fvf_layouts);
     auto [it, fresh] = d.fvf_layouts.try_emplace({d.fvf | uint64_t(ff) << 32, prog.get()});
@@ -621,13 +696,15 @@ void DrawCounted(Device& d, gfx::ShaderDraw& sd, const char* what) {
     if (perf::On()) g_perf.standin_ps.fetch_add(1, std::memory_order_relaxed);
   }
   // A pixel shader after the fixed-function vertex stage: a vertex shader
-  // in its place (FVF draws only).
+  // in its place, for an FVF or a declaration that is an FVF's layout.
   const Device::FfVertexShader* ff = nullptr;
   static float ff_consts[256][4];
   if (!vs) {
-    if (d.decl.obj || !d.fvf)
-      FatalF("d3d9: %s with a pixel shader, no vertex shader and a vertex declaration", what);
-    ff = &FfVertexShaderFor(d, ff_consts);
+    const uint32_t fvf = d.decl.obj ? FvfOfDecl(d.decl.obj->elements) : d.fvf;
+    if (!fvf)
+      FatalF("d3d9: %s with a pixel shader, no vertex shader and a vertex declaration "
+             "that is no FVF's layout", what);
+    ff = &FfVertexShaderFor(d, fvf, ff_consts);
     if (perf::On()) g_perf.standin_vs.fetch_add(1, std::memory_order_relaxed);
   }
   const std::vector<gfx::VertexInput>& inputs =

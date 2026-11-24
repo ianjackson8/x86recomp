@@ -169,6 +169,22 @@ HLE("gdi32.dll", CreateFontA, 14) {
   }
   return NewFontA(lfa);
 }
+// CreateFontW: CreateFontA's arguments, the face name in WCHARs.
+HLE("gdi32.dll", CreateFontW, 14) {
+  uint8_t lfw[92] = {};
+  for (int i = 0; i < 5; i++) {
+    const int32_t v = int32_t(Arg(c, i));
+    std::memcpy(lfw + 4 * i, &v, 4);
+  }
+  for (int i = 0; i < 8; i++) lfw[20 + i] = uint8_t(Arg(c, 5 + i));
+  if (gaddr face = Arg(c, 13))
+    for (int i = 0; i < 31; i++) {
+      const char16_t ch = Rd16(face + 2 * i);
+      if (!ch) break;
+      std::memcpy(lfw + 28 + 2 * i, &ch, 2);
+    }
+  return NewFont(lfw);
+}
 HLE("gdi32.dll", CreateFontIndirectA, 1) {
   if (!Arg(c, 0)) return 0;
   uint8_t lfa[60];
@@ -501,6 +517,87 @@ HLE("gdi32.dll", RemoveFontResourceExW, 3) {
   return host_font::UnregisterFile(HostPath(NarrowPath(GWStr(Arg(c, 0))))) ? 1 : 0;
 }
 
+// EnumFontFamiliesExW(hdc, &logfont, proc, lparam, flags): proc(&elf,
+// &ntm, TRUETYPE_FONTTYPE, lparam) for each family matching lfFaceName
+// (all of them for ""), one regular style each, in the requested charset
+// (ANSI for DEFAULT_CHARSET); stops when proc returns 0. ENUMLOGFONTEXW is
+// a LOGFONTW, then elfFullName[64], elfStyle[32], elfScript[32]; the
+// NEWTEXTMETRICEXW a TEXTMETRICW, ntmFlags, ntmSizeEM, ntmCellHeight,
+// ntmAvgWidth, then a FONTSIGNATURE. Returns the last value proc returned.
+HLE("gdi32.dll", EnumFontFamiliesExW, 5) {
+  if (!host_font::Available()) FatalF("EnumFontFamiliesExW: needs a host font engine");
+  const gaddr lf = Arg(c, 1), proc = Arg(c, 2);
+  const uint64_t lparam = Arg(c, 3);
+  std::u16string want;
+  for (int i = 0; i < 32; i++) {
+    const char16_t ch = Rd16(lf + 28 + 2 * i);
+    if (!ch) break;
+    want.push_back(ch);
+  }
+  const uint8_t charset = Rd8(lf + 23) == 1 ? 0 : Rd8(lf + 23);  // DEFAULT_CHARSET
+  std::vector<std::u16string> faces;
+  auto lower = [](std::u16string s) {
+    for (char16_t& ch : s)
+      if (ch >= u'A' && ch <= u'Z') ch = char16_t(ch + 32);
+    return s;
+  };
+  for (const auto& f : host_font::FamilyNames())
+    if (want.empty() || lower(f) == lower(want)) faces.push_back(f);
+  const gaddr elf = HeapAllocProcess(348, true), ntm = HeapAllocProcess(100, true);
+  uint32_t ret = 1;
+  for (const auto& face : faces) {
+    host_font::Desc d;
+    d.face = face;
+    d.height = -16;
+    const host_font::Metrics m = host_font::Create(d)->metrics();
+    std::memset(GPtr(elf), 0, 348);
+    const int32_t head[5] = {m.height, m.ave_char_width, 0, 0, m.weight};
+    std::memcpy(GPtr(elf), head, sizeof head);
+    Wr8(elf + 20, m.italic ? 1 : 0);
+    Wr8(elf + 23, charset);
+    Wr8(elf + 24, 3);  // OUT_STROKE_PRECIS
+    Wr8(elf + 25, 2);  // CLIP_STROKE_PRECIS
+    Wr8(elf + 26, 1);  // DRAFT_QUALITY
+    Wr8(elf + 27, uint8_t((m.fixed_pitch ? 1 : 2) | 0x20));
+    auto put = [&](gaddr at, const std::u16string& s, size_t n) {
+      for (size_t i = 0; i < s.size() && i + 1 < n; i++) Wr16(at + 2 * gaddr(i), s[i]);
+    };
+    put(elf + 28, face, 32);
+    put(elf + 92, face, 64);
+    put(elf + 220, u"Regular", 32);
+    put(elf + 284, u"Western", 32);
+    WriteTextMetrics(ntm, true, &m);
+    Wr32(ntm + 60, 0x40);  // NTM_REGULAR
+    Wr32(ntm + 64, 2048);  // ntmSizeEM
+    Wr32(ntm + 68, uint32_t(m.height));
+    Wr32(ntm + 72, uint32_t(m.ave_char_width));
+    Wr32(ntm + 76 + 16, 1);  // fsCsb[0]: Latin 1
+    ret = uint32_t(CallGuest(c, proc, {elf, ntm, 4, lparam}));  // TRUETYPE_FONTTYPE
+    if (!ret) break;
+  }
+  HeapFreeProcess(elf);
+  HeapFreeProcess(ntm);
+  return ret;
+}
+
+// GetKerningPairsW(hdc, n, pairs): the selected font's KERNINGPAIRs
+// {wFirst, wSecond, iKernAmount} (host_font: the 'kern' table GDI reads);
+// with no array, how many there are.
+HLE("gdi32.dll", GetKerningPairsW, 3) {
+  auto f = NeedHostFont(uint32_t(Arg(c, 0)), "GetKerningPairsW");
+  const auto pairs = f->KerningPairs();
+  const uint32_t n = uint32_t(Arg(c, 1));
+  const gaddr out = Arg(c, 2);
+  if (!out) return uint32_t(pairs.size());
+  const uint32_t m = std::min<uint32_t>(n, uint32_t(pairs.size()));
+  for (uint32_t i = 0; i < m; i++) {
+    Wr16(out + 8 * i, pairs[i].first);
+    Wr16(out + 8 * i + 2, pairs[i].second);
+    Wr32(out + 8 * i + 4, uint32_t(pairs[i].amount));
+  }
+  return m;
+}
+
 // GetFontUnicodeRanges(hdc, glyphset): the characters of the Basic
 // Multilingual Plane the face maps (GLYPHSET: cbThis, flAccel,
 // cGlyphsSupported, cRanges, then WCRANGE {wcLow, cGlyphs} each); returns
@@ -551,6 +648,103 @@ HLE("gdi32.dll", GetGlyphIndicesW, 5) {
   return n;
 }
 
+// GGO_NATIVE / GGO_BEZIER data: per contour a TTPOLYGONHEADER {cb, dwType
+// TT_POLYGON_TYPE (24), pfxStart} then TTPOLYCURVEs {wType, cpfx,
+// POINTFX[cpfx]}: TT_PRIM_LINE (1) runs of lines, TT_PRIM_QSPLINE (2) a
+// quadratic (control, end), TT_PRIM_CSPLINE (3) a cubic (two controls,
+// end); GGO_BEZIER has lines and cubics only (quadratics raised). Points
+// are 16.16 fixed (FIXED: fract, value), pixels, y up from the pen. A
+// contour that does not end at its start gets the closing line written
+// out: GDI's polygons close implicitly, but some readers (a SWF player's
+// font provider) fill only what is written. Returns the size, or writes
+// it when it fits in `size`.
+uint32_t GlyphOutlineData(const host_font::Font& f, uint16_t glyph, bool bezier, gaddr buf,
+                          uint32_t size) {
+  std::vector<uint8_t> out;
+  auto u16 = [&](uint16_t v) { out.push_back(uint8_t(v)); out.push_back(uint8_t(v >> 8)); };
+  auto u32 = [&](uint32_t v) { for (int i = 0; i < 4; i++) out.push_back(uint8_t(v >> (8 * i))); };
+  auto fx = [&](float v) { u32(uint32_t(int32_t(std::lround(double(v) * 65536.0)))); };
+  size_t header = SIZE_MAX;           // offset of the open contour's header
+  size_t run = SIZE_MAX;              // offset of an open TT_PRIM_LINE curve
+  float px = 0, py = 0, sx = 0, sy = 0;  // current point, contour start
+  auto line_to = [&](float x, float y) {
+    if (run == SIZE_MAX) {
+      run = out.size();
+      u16(1);  // TT_PRIM_LINE
+      u16(0);
+    }
+    fx(x);
+    fx(y);
+    const uint16_t n = uint16_t((out[run + 2] | out[run + 3] << 8) + 1);  // cpfx
+    out[run + 2] = uint8_t(n);
+    out[run + 3] = uint8_t(n >> 8);
+    px = x;
+    py = y;
+  };
+  auto close = [&] {
+    if (header == SIZE_MAX) return;
+    if (px != sx || py != sy) line_to(sx, sy);
+    const uint32_t cb = uint32_t(out.size() - header);
+    for (int i = 0; i < 4; i++) out[header + i] = uint8_t(cb >> (8 * i));
+    header = SIZE_MAX;
+    run = SIZE_MAX;
+  };
+  auto curve = [&](uint16_t type, const float* pts, int n) {
+    u16(type);
+    u16(uint16_t(n));
+    for (int i = 0; i < n; i++) {
+      fx(pts[2 * i]);
+      fx(pts[2 * i + 1]);
+    }
+  };
+  for (const auto& e : f.Outline(glyph)) {
+    switch (e.kind) {
+      case host_font::Font::PathElem::kMove:
+        close();
+        header = out.size();
+        u32(0);   // cb, set by close()
+        u32(24);  // TT_POLYGON_TYPE
+        fx(e.pts[0]);
+        fx(e.pts[1]);
+        px = sx = e.pts[0];
+        py = sy = e.pts[1];
+        break;
+      case host_font::Font::PathElem::kLine:
+        line_to(e.pts[0], e.pts[1]);
+        break;
+      case host_font::Font::PathElem::kQuad:
+        run = SIZE_MAX;
+        if (bezier) {  // raised to a cubic
+          const float c[6] = {px + 2.0f / 3 * (e.pts[0] - px), py + 2.0f / 3 * (e.pts[1] - py),
+                              e.pts[2] + 2.0f / 3 * (e.pts[0] - e.pts[2]),
+                              e.pts[3] + 2.0f / 3 * (e.pts[1] - e.pts[3]), e.pts[2], e.pts[3]};
+          curve(3, c, 3);
+        } else {
+          curve(2, e.pts, 2);
+        }
+        px = e.pts[2];
+        py = e.pts[3];
+        break;
+      case host_font::Font::PathElem::kCubic:
+        run = SIZE_MAX;
+        curve(3, e.pts, 3);
+        px = e.pts[4];
+        py = e.pts[5];
+        break;
+      case host_font::Font::PathElem::kClose:
+        close();
+        px = sx;
+        py = sy;
+        break;
+    }
+  }
+  close();
+  if (!buf || !size) return uint32_t(out.size());
+  if (size < out.size()) return 0xFFFFFFFF;  // GDI_ERROR
+  if (!out.empty()) std::memcpy(GPtr(buf), out.data(), out.size());
+  return uint32_t(out.size());
+}
+
 // GetGlyphOutline(hdc, ch, format, &gm, size, buf, &mat2): GGO_METRICS and
 // the GGO_BITMAP / GGO_GRAY2,4,8_BITMAP formats (rows DWORD-aligned, top
 // down; grey levels 0..4, 16 or 64), for a character or, with
@@ -582,13 +776,14 @@ uint32_t GetGlyphOutlineImpl(Ctx& c, bool wide) {
   Wr16(gm_out + 18, 0);
   const uint32_t kind = format & 0x0F;
   if (kind == 0) return 1;  // GGO_METRICS
+  if (kind == 2 || kind == 3) return GlyphOutlineData(*f, glyph, kind == 3, buf, size);
   int levels;
   switch (kind) {
     case 1: levels = 1; break;   // GGO_BITMAP
     case 4: levels = 4; break;   // GGO_GRAY2_BITMAP
     case 5: levels = 16; break;  // GGO_GRAY4_BITMAP
     case 6: levels = 64; break;  // GGO_GRAY8_BITMAP
-    default: FatalF("GetGlyphOutline: format %u (outlines) not modelled", kind);
+    default: FatalF("GetGlyphOutline: format %u not modelled", kind);
   }
   if (!m.box_w || !m.box_h) return 0;  // nothing to draw
   const uint32_t pitch =

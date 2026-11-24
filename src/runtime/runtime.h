@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "runtime/ctx.h"
@@ -127,6 +128,12 @@ struct GameConfig {
   // one to read instead out, or "" for itself), e.g. a game's keyboard
   // prompt images swapped for a pad's while one is connected.
   std::string (*read_redirect)(const std::string& guest_path) = nullptr;
+
+  // Further guest directories backed by host directories, read only:
+  // {guest dir ("C:\\..."), host dir}, e.g. a Steam library's Workshop
+  // content next to the install. HostPath resolves below them; writing
+  // there is fatal. GuestPathOf maps host paths back.
+  std::vector<std::pair<std::string, std::string>> mounts;
 
   // Optional: a Direct3D 9 shader's bytecode before it is translated, to
   // correct a bug in the game's own shaders.

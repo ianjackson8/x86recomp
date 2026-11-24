@@ -802,30 +802,23 @@ HLE64("ucrtbase.dll", strtok_s, kCdecl) {
 }
 
 // ---- wide character classes ---------------------------------------------------
-// Exact for ASCII. Beyond it Windows classifies by its Unicode tables
-// (GetStringTypeW), not modelled yet: such a character is a fatal error
-// naming the call, never a guessed class. WEOF (0xFFFF) is in no class.
+// Windows' CT_CTYPE1 classes (GetStringTypeW; win32::CharType1) for the
+// Basic Multilingual Plane. WEOF (0xFFFF) is in no class.
 
 namespace {
-int WClass(const Ctx& c, const char* fn) {
+// The character's CT_CTYPE1 bits (_UPPER 1, _LOWER 2, _DIGIT 4, _SPACE 8,
+// _PUNCT 0x10, _CONTROL 0x20, _BLANK 0x40, _HEX 0x80, _ALPHA 0x100), 0 for
+// WEOF.
+uint32_t WClass(const Ctx& c, const char* fn) {
   const uint32_t ch = uint32_t(Arg(c, 0)) & 0xFFFF;
-  if (ch == 0xFFFF) return -1;
-  if (ch >= 0x80) FatalF("guest CRT: %s(U+%04X): non-ASCII classes not modelled yet", fn, ch);
-  return int(ch);
+  if (ch == 0xFFFF) return 0;
+  (void)fn;
+  return win32::CharType1(uint16_t(ch));
 }
 }  // namespace
-HLE64("ucrtbase.dll", iswdigit, kCdecl) {
-  int ch = WClass(c, "iswdigit");
-  return ch >= 0 && std::isdigit(ch) ? 1 : 0;
-}
-HLE64("ucrtbase.dll", iswspace, kCdecl) {
-  int ch = WClass(c, "iswspace");
-  return ch >= 0 && std::isspace(ch) ? 1 : 0;
-}
-HLE64("ucrtbase.dll", iswalnum, kCdecl) {
-  int ch = WClass(c, "iswalnum");
-  return ch >= 0 && std::isalnum(ch) ? 1 : 0;
-}
+HLE64("ucrtbase.dll", iswdigit, kCdecl) { return WClass(c, "iswdigit") & 0x4; }
+HLE64("ucrtbase.dll", iswspace, kCdecl) { return WClass(c, "iswspace") & 0x8; }
+HLE64("ucrtbase.dll", iswalnum, kCdecl) { return WClass(c, "iswalnum") & 0x107; }
 
 // ---- wide strings ("C" locale) ---------------------------------------------
 
@@ -1296,14 +1289,16 @@ HLE64("ucrtbase.dll", qsort, kCdecl) {
 
 // ---- environment -----------------------------------------------------------
 
-HLE64_ONLY("ucrtbase.dll", getenv, kCdecl) {
+// getenv(name): the value in the CRT's environment block (made on first
+// use), pointers at the guest's width.
+HLE64("ucrtbase.dll", getenv, kCdecl) {
   std::string name = S(Arg(c, 0));
-  gaddr env = Rd64(G().environ);
+  gaddr env = RdPtr(G().environ);
   if (!env) {
-    Wr64(G().environ, GuestStrings(EnvironmentVars()));
-    env = Rd64(G().environ);
+    WrPtr(G().environ, GuestStrings(EnvironmentVars()));
+    env = RdPtr(G().environ);
   }
-  for (gaddr e; (e = Rd64(env)); env += 8) {
+  for (gaddr e; (e = RdPtr(env)); env += PtrSize()) {
     const char* v = S(e);
     if (StrICmp(v, name.c_str(), name.size()) == 0 && v[name.size()] == '=')
       return e + name.size() + 1;
@@ -1683,17 +1678,16 @@ HLE("msvcrt.dll", _ultoa, kCdecl) {
 }
 // The single-byte code page a program starts with: no lead bytes.
 HLE("msvcrt.dll", isleadbyte, kCdecl) { return 0; }
+// iswalpha / iswpunct: Windows' CT_CTYPE1 classes (win32::CharType1).
 HLE("msvcrt.dll", iswalpha, kCdecl) {
   const uint32_t ch = uint32_t(Arg(c, 0)) & 0xFFFF;
   if (ch == 0xFFFF) return 0;
-  if (ch >= 0x80) FatalF("guest CRT: iswalpha(U+%04X): non-ASCII classes not modelled yet", ch);
-  return std::isalpha(int(ch)) ? 1 : 0;
+  return (win32::CharType1(uint16_t(ch)) & 0x100) ? 0x103 & win32::CharType1(uint16_t(ch)) : 0;
 }
 HLE("msvcrt.dll", iswpunct, kCdecl) {
   const uint32_t ch = uint32_t(Arg(c, 0)) & 0xFFFF;
   if (ch == 0xFFFF) return 0;
-  if (ch >= 0x80) FatalF("guest CRT: iswpunct(U+%04X): non-ASCII classes not modelled yet", ch);
-  return std::ispunct(int(ch)) ? 1 : 0;
+  return win32::CharType1(uint16_t(ch)) & 0x10;
 }
 // wctomb(dst, wc): the "C" locale's byte for wc (0-255), else -1 and EILSEQ.
 HLE("msvcrt.dll", wctomb, kCdecl) {

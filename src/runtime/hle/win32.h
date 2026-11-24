@@ -258,20 +258,36 @@ inline std::string Utf16ToUtf8(const char16_t* w, size_t n, bool* bad) {
   return s;
 }
 
-// CT_CTYPE1 classification for Latin-1 + the CP1252 extras.
+// CT_CTYPE1 classification (GetStringTypeW): Latin-1 by hand, the rest of
+// the Basic Multilingual Plane from Unicode's general categories
+// (win32_ctype1.inc, tools/gen_ctype1.py).
 inline uint16_t CharType1(uint16_t u) {
   enum { kUpper = 1, kLower = 2, kDigit = 4, kSpace = 8, kPunct = 0x10,
          kCntrl = 0x20, kBlank = 0x40, kXDigit = 0x80, kAlpha = 0x100 };
+  if (u > 0xFF) {
+    struct Range {
+      uint16_t first, last, bits;
+    };
+    static constexpr Range kRanges[] = {
+#include "runtime/hle/win32_ctype1.inc"
+    };
+    size_t lo = 0, hi = sizeof kRanges / sizeof kRanges[0];
+    while (lo < hi) {
+      const size_t mid = (lo + hi) / 2;
+      if (kRanges[mid].last < u) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < sizeof kRanges / sizeof kRanges[0] && kRanges[lo].first <= u ? kRanges[lo].bits : 0;
+  }
   uint16_t t = 0;
   if (u < 0x20 || (u >= 0x7F && u < 0xA0)) t |= kCntrl;
   if (u == ' ' || u == '\t' || u == 0xA0) t |= kBlank;
   if (u == ' ' || (u >= 0x09 && u <= 0x0D) || u == 0xA0) t |= kSpace;
   if (u >= '0' && u <= '9') t |= kDigit | kXDigit;
   if ((u >= 'a' && u <= 'f') || (u >= 'A' && u <= 'F')) t |= kXDigit;
-  bool upper = (u >= 'A' && u <= 'Z') || (u >= 0xC0 && u <= 0xDE && u != 0xD7) ||
-               u == 0x0160 || u == 0x0152 || u == 0x017D || u == 0x0178;
+  bool upper = (u >= 'A' && u <= 'Z') || (u >= 0xC0 && u <= 0xDE && u != 0xD7);
   bool lower = (u >= 'a' && u <= 'z') || (u >= 0xDF && u <= 0xFF && u != 0xF7) ||
-               u == 0x0161 || u == 0x0153 || u == 0x017E || u == 0x0192;
+               u == 0xAA || u == 0xB5 || u == 0xBA;  // ª µ º: letters
   if (upper) t |= kUpper | kAlpha;
   if (lower) t |= kLower | kAlpha;
   if (!t && u > 0x20 && u < 0x7F) t |= kPunct;

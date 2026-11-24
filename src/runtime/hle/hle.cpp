@@ -86,6 +86,31 @@ const std::vector<std::string>& KnownDlls() {
   return dlls;
 }
 
+// DLLs the program's import tables name that the runtime provides, beyond
+// KnownDlls (in the order they were first bound): they have module handles
+// too, as Windows maps every DLL a module imports. Their handles follow
+// KnownDlls' in the module region.
+std::mutex g_imported_mu;
+std::vector<std::string>& ImportedDlls() {
+  static std::vector<std::string> v;
+  return v;
+}
+void NoteImportedDll(const std::string& n) {
+  const auto& k = KnownDlls();
+  if (std::find(k.begin(), k.end(), n) != k.end()) return;
+  std::lock_guard<std::mutex> l(g_imported_mu);
+  auto& v = ImportedDlls();
+  if (std::find(v.begin(), v.end(), n) == v.end()) v.push_back(n);
+}
+// The DLL at module-region index `idx`, or "".
+std::string DllAtIndex(gaddr idx) {
+  const auto& k = KnownDlls();
+  if (idx < k.size()) return k[size_t(idx)];
+  std::lock_guard<std::mutex> l(g_imported_mu);
+  const auto& v = ImportedDlls();
+  return idx - k.size() < v.size() ? v[size_t(idx - k.size())] : std::string();
+}
+
 // The thunk region of this process's mode.
 gaddr ThunkBase() { return g_proc->x64 ? kThunkBase64 : kThunkBase; }
 gaddr ModuleRegion() { return g_proc->x64 ? kModuleRegion64 : kModuleRegion; }
@@ -167,6 +192,7 @@ std::string NormaliseDll(std::string dll) {
 
 gaddr ImportThunk(const std::string& dll, const std::string& name) {
   std::string n = NormaliseDll(dll);
+  NoteImportedDll(n);
   if (gaddr data = DataAddress(n, name)) return data;
   if (!FindDef(n, name))
     RECOMP_TRACE("hle: import %s!%s has no handler\n", n.c_str(), name.c_str());
@@ -279,16 +305,26 @@ gaddr ModuleHandle(const std::string& dll) {
   std::string n = NormaliseDll(dll);
   const auto& k = KnownDlls();
   auto it = std::find(k.begin(), k.end(), n);
-  if (it == k.end()) return 0;
-  return ModuleRegion() + uint32_t(it - k.begin()) * 0x10000;
+  if (it != k.end()) return ModuleRegion() + uint32_t(it - k.begin()) * 0x10000;
+  std::lock_guard<std::mutex> l(g_imported_mu);
+  const auto& v = ImportedDlls();
+  auto jt = std::find(v.begin(), v.end(), n);
+  if (jt == v.end()) return 0;
+  const uint32_t idx = uint32_t(k.size() + size_t(jt - v.begin()));
+  if (idx * 0x10000ull >= kModuleRegionSize) FatalF("module region full (%u DLLs)", idx);
+  return ModuleRegion() + idx * 0x10000;
+}
+
+std::string ModuleName(gaddr hmodule) {
+  if (hmodule < ModuleRegion() || (hmodule - ModuleRegion()) % 0x10000) return {};
+  return DllAtIndex((hmodule - ModuleRegion()) / 0x10000);
 }
 
 gaddr ProcAddress(gaddr hmodule, const std::string& name) {
-  const auto& k = KnownDlls();
-  gaddr idx = (hmodule - ModuleRegion()) / 0x10000;
-  if (hmodule < ModuleRegion() || idx >= k.size()) return 0;
-  if (gaddr data = DataAddress(k[idx], name)) return data;
-  const std::string& dll = k[idx];
+  if (hmodule < ModuleRegion()) return 0;
+  const std::string dll = DllAtIndex((hmodule - ModuleRegion()) / 0x10000);
+  if (dll.empty()) return 0;
+  if (gaddr data = DataAddress(dll, name)) return data;
   if (!FindDef(dll, name)) {
     auto ex = DeclaredExports().find(dll);
     if (ex != DeclaredExports().end() && ex->second.count(name))

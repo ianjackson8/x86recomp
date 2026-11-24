@@ -160,6 +160,20 @@ bool InstallComponents(const std::string& g, std::vector<std::string>* comps) {
   return true;
 }
 
+// The mount (GameConfig::mounts) a guest path is in, and its components
+// below the mount's directory; null if none.
+const std::pair<std::string, std::string>* MountComponents(const std::string& g,
+                                                           std::vector<std::string>* comps) {
+  const std::string lg = win32::Lower(g);
+  for (const auto& m : Game().mounts) {
+    const std::string lroot = win32::Lower(m.first);
+    if (lg != lroot && lg.rfind(lroot + "\\", 0) != 0) continue;
+    *comps = Components("C:\\" + g.substr(std::min(g.size(), lroot.size() + 1)));
+    return &m;
+  }
+  return nullptr;
+}
+
 bool Exists(const std::string& host, struct stat* st = nullptr) {
   struct stat s;
   return stat(host.c_str(), st ? st : &s) == 0;
@@ -211,10 +225,31 @@ std::string HostPath(const std::string& guest_path, PathAccess access) {
       CopyHostFile(inst, over);
     return over;
   }
+  if (const auto* m = MountComponents(g, &comps)) {
+    if (access != PathAccess::kRead)
+      FatalF("guest write below %s, a read-only mount: %s", m->first.c_str(), g.c_str());
+    return Resolve(m->second, comps);
+  }
   // Everything else lives in the per-user tree, by drive letter.
   std::string root = UserDataRoot();
   if (g[0] != 'C') root += std::string("/drive_") + char(std::tolower(g[0]));
   return Resolve(root, Components(g));
+}
+
+std::string GuestPathOf(const std::string& host_path) {
+  auto below = [&](const std::string& host_root, const std::string& guest_root) -> std::string {
+    std::string r = host_root;
+    while (r.size() > 1 && r.back() == '/') r.pop_back();
+    if (host_path != r && host_path.rfind(r + "/", 0) != 0) return {};
+    std::string rest = host_path.substr(r.size());
+    for (char& ch : rest)
+      if (ch == '/') ch = '\\';
+    return guest_root + rest;
+  };
+  if (std::string g = below(g_proc->game_dir, GuestGameDir()); !g.empty()) return g;
+  for (const auto& m : Game().mounts)
+    if (std::string g = below(m.second, m.first); !g.empty()) return g;
+  return {};
 }
 
 std::vector<std::string> HostDirs(const std::string& guest_dir) {

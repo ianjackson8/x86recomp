@@ -118,6 +118,9 @@ std::string NarrowPath(const std::u16string& path);
 // The install and overlay directories behind a guest directory, for
 // merged listings (overlay first). One entry outside the install.
 std::vector<std::string> HostDirs(const std::string& guest_dir);
+// The guest path of a host path below the game directory or a mount
+// (GameConfig::mounts), "" for any other.
+std::string GuestPathOf(const std::string& host_path);
 std::string GuestCurrentDir();
 
 // Thrown by ExitThread to unwind a guest thread's host stack back to its

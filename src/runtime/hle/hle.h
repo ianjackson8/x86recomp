@@ -34,7 +34,7 @@ extern thread_local int t_hle_depth;
 
 // Guest range used for pseudo HMODULE values of the DLLs we provide.
 inline constexpr uint32_t kModuleRegion = 0x70000000;
-inline constexpr uint32_t kModuleRegionSize = 0x00200000;
+inline constexpr uint32_t kModuleRegionSize = 0x00800000;  // 128 DLLs
 inline constexpr gaddr kModuleRegion64 = 0xFFE000000;  // x64 (runtime.h)
 
 using Fn = uint64_t (*)(Ctx& c);
@@ -186,6 +186,9 @@ void CallThunk(Ctx& c, gaddr thunk);
 // Pseudo module handles for DLLs the game loads (LoadLibrary/
 // GetModuleHandle). Returns 0 for DLLs we don't provide.
 gaddr ModuleHandle(const std::string& dll);
+// The DLL (normalised name) behind a pseudo HMODULE ModuleHandle gave,
+// or "" for any other value.
+std::string ModuleName(gaddr hmodule);
 // Thunk address for dll!name (GetProcAddress); 0 if not implemented.
 gaddr ProcAddress(gaddr hmodule, const std::string& name);
 

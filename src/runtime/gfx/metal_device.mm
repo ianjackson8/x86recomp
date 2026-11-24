@@ -985,6 +985,58 @@ class MetalDevice final : public Device {
     Update(tid, face, level, r, src, pitch);
   }
 
+  TextureId CreateVolumeTexture(int w, int h, int depth, int levels, Format fmt) override {
+    std::lock_guard<std::recursive_mutex> l(mu_);
+    if (w <= 0 || h <= 0 || depth <= 0) return 0;
+    if (levels <= 0) {
+      levels = 1;
+      for (int s = std::max({w, h, depth}); s > 1; s >>= 1) levels++;
+    }
+    Tex t;
+    t.w = w;
+    t.h = h;
+    t.d = depth;
+    t.levels = levels;
+    t.fmt = fmt;
+    t.volume = true;
+    t.opaque = fmt == Format::X8R8G8B8;
+    @autoreleasepool {
+      MTLTextureDescriptor* td = [MTLTextureDescriptor new];
+      td.textureType = MTLTextureType3D;
+      td.pixelFormat = TexFormat(fmt);
+      td.width = NSUInteger(w);
+      td.height = NSUInteger(h);
+      td.depth = NSUInteger(depth);
+      td.mipmapLevelCount = NSUInteger(levels);
+      td.storageMode = MTLStorageModePrivate;
+      td.usage = MTLTextureUsageShaderRead;
+      if (t.opaque)
+        td.swizzle = MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleGreen,
+                                                   MTLTextureSwizzleBlue, MTLTextureSwizzleOne);
+      t.tex = [dev_ newTextureWithDescriptor:td];
+    }
+    if (perf_) pc_.textures++;
+    if (!t.tex) {
+      WarnF("gfx: CreateVolumeTexture %dx%dx%d x%d fmt %u failed\n", w, h, depth, levels, unsigned(fmt));
+      return 0;
+    }
+    TextureId tid = NewTexId();
+    AddTex(tid, t);
+    return tid;
+  }
+
+  void UpdateVolumeTexture(TextureId tid, int level, int z, const Rect& r, const void* src,
+                           uint32_t pitch) override {
+    std::lock_guard<std::recursive_mutex> l(mu_);
+    auto it = textures_.find(tid);
+    if (it == textures_.end() || !it->second.volume || level < 0 || level >= it->second.levels) return;
+    Tex& t = it->second;
+    if (z < 0 || z >= std::max(1, t.d >> level)) return;
+    Rect c = Clip(r, std::max(1, t.w >> level), std::max(1, t.h >> level));
+    if (Empty(c)) return;
+    Upload(t, 0, level, c, src, pitch, t.fmt, z);
+  }
+
   DepthId CreateDepth(int w, int h, Format fmt) override {
     std::lock_guard<std::recursive_mutex> l(mu_);
     int rw = w, rh = h;
@@ -2835,6 +2887,8 @@ void main() {
     Format fmt = Format::Unknown;
     bool rt = false;
     bool cube = false;
+    bool volume = false;  // CreateVolumeTexture: 3D, d slices
+    int d = 1;
     DepthId depth = 0;  // CreateDepthTexture: the depth buffer sharing `tex`
     uint64_t used = 0;  // the last frame (serial_) that drew with or into it
     bool opaque = false;  // alpha read as 1: X8R8G8B8 data uploaded as is
@@ -3139,7 +3193,7 @@ void main() {
       Tex* t = FindTex(d.textures[r]);
       bool reversed = false;  // a reversed depth texture: its border colour mirrored
       if (t && t->cube == (want == hlsl::ParamType::SamplerCube) &&
-          want != hlsl::ParamType::Sampler3D) {
+          t->volume == (want == hlsl::ParamType::Sampler3D)) {
         tex = t->tex;
         t->used = serial_;
         reversed = t->depth && ReversedDepth(tex.pixelFormat);
@@ -4381,8 +4435,9 @@ void main() {
   }
 
   // `c` (clipped) of `level` / `slice` from linear memory in `fmt`.
+  // `z`: the slice of a volume texture (0 otherwise).
   void Upload(Tex& t, int slice, int level, const Rect& c, const void* src, uint32_t pitch,
-              Format fmt) {
+              Format fmt, int z = 0) {
     @autoreleasepool {
       const int w = c.right - c.left, h = c.bottom - c.top;
       const auto* s = static_cast<const uint8_t*>(src);
@@ -4409,7 +4464,7 @@ void main() {
           __unsafe_unretained id<MTLTexture> tex = t.tex;
           __unsafe_unretained id<MTLBuffer> buf = shared_buf_;
           const size_t off = size_t(s - shared_lo_);
-          const MTLOrigin origin = MTLOriginMake(NSUInteger(c.left), NSUInteger(c.top), 0);
+          const MTLOrigin origin = MTLOriginMake(NSUInteger(c.left), NSUInteger(c.top), NSUInteger(z));
           Rec([=, this] {
             id<MTLBlitCommandEncoder> bl = blit_;
             if (!in_order) {
@@ -4456,7 +4511,7 @@ void main() {
         blit_open_ = true;
       }
       __unsafe_unretained id<MTLTexture> tex = t.tex;
-      const MTLOrigin origin = MTLOriginMake(NSUInteger(c.left), NSUInteger(c.top), 0);
+      const MTLOrigin origin = MTLOriginMake(NSUInteger(c.left), NSUInteger(c.top), NSUInteger(z));
       Rec([=, this] {
         id<MTLBlitCommandEncoder> bl = blit_;
         if (!in_order) {

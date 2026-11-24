@@ -118,16 +118,22 @@ struct Surface final : com::Tagged<com::TagOf("d3d9.Surface")> {
   ~Surface() override;
 };
 
+struct Volume;
+
 struct Texture final : com::Tagged<com::TagOf("d3d9.Texture")> {
   PrivateData priv;
   uint32_t device = 0;
   bool cube = false;  // IDirect3DCubeTexture9: six faces of levels each
+  bool volume = false;  // IDirect3DVolumeTexture9: `depth` slices per level
+  uint32_t depth_slices = 1;
   uint32_t width = 0, height = 0, levels = 0, usage = 0, format = 0, pool = 0;
   gfx::Format fmt = gfx::Format::Unknown;
   gfx::TextureId tex = 0;  // none for SYSTEMMEM/SCRATCH
   gfx::DepthId depth = 0;  // INTZ: the depth buffer behind `tex` (level 0)
   struct Level {
     uint32_t w = 0, h = 0, pitch = 0, size = 0;
+    uint32_t d = 1, slice = 0;  // volume levels: slices and bytes per slice
+    uint32_t locked_front = 0, locked_back = 0;  // volume levels: LockBox's slices
     uint32_t mem = 0;  // lock shadow, allocated on first lock
     // mem is in the shared heap (SetUpSharedBuffers): the gfx frame of the
     // last upload from it, which the GPU may still be copying.
@@ -137,12 +143,22 @@ struct Texture final : com::Tagged<com::TagOf("d3d9.Texture")> {
     gfx::Rect locked_rect{};
     bool lock_readonly = false;
     std::shared_ptr<Surface> surface;  // GetSurfaceLevel, created lazily
+    std::shared_ptr<Volume> volume;    // GetVolumeLevel, created lazily
   };
   std::vector<Level> lv;  // face * levels + level
   Level& At(uint32_t face, uint32_t level) { return lv[face * levels + level]; }
   uint32_t Faces() const { return cube ? 6 : 1; }
   uint32_t lod = 0, priority = 0, autogen_filter = 2;  // D3DTEXF_LINEAR
   ~Texture() override;
+};
+
+// IDirect3DVolume9: a level of a volume texture, counted with it.
+struct Volume final : com::Tagged<com::TagOf("d3d9.Volume")> {
+  PrivateData priv;
+  uint32_t device = 0;
+  Texture* texture = nullptr;
+  uint32_t container = 0;  // the texture's guest pointer
+  uint32_t level = 0;
 };
 
 struct Buffer final : com::Tagged<com::TagOf("d3d9.Buffer")> {
