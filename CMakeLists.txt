@@ -209,6 +209,10 @@ if(FFMPEG_FOUND)
   add_library(recomp_dsound SHARED src/runtime/hle/dsound.cpp)
   target_link_libraries(recomp_dsound PUBLIC recomp_runtime recomp_audio)
 
+  # OpenAL 1.1 (openal32.dll) on the same mixer.
+  add_library(recomp_openal SHARED src/runtime/hle/openal.cpp)
+  target_link_libraries(recomp_openal PUBLIC recomp_runtime recomp_audio)
+
   # Bink video (binkw32) on ffmpeg; audio through the Miles mixer.
   add_library(recomp_bink SHARED src/runtime/hle/binkw32.cpp
               src/runtime/hle/bink_play.cpp
