@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
+#include <sys/stat.h>
 #include <map>
 #include <mutex>
 #include <string>
@@ -33,8 +35,10 @@ struct Stream {
 std::recursive_mutex g_streams_mu;
 std::map<gaddr, Stream> g_streams;  // by guest FILE*
 
+// The guest FILE block: zeroed, so its first fields (the UCRT's _ptr,
+// _base, _cnt: _get_stream_buffer_pointers) say the buffer is empty.
 gaddr NewStream(FILE* f, bool text, bool owned) {
-  gaddr p = HeapAllocProcess(16, true);
+  gaddr p = HeapAllocProcess(32, true);
   std::lock_guard<std::recursive_mutex> l(g_streams_mu);
   g_streams[p] = {f, text, owned};
   return p;
@@ -601,6 +605,28 @@ HLE64("ucrtbase.dll", _getcwd, kCdecl) {
   return buf;
 }
 HLE64("ucrtbase.dll", fopen, kCdecl) { return Open(GStr(Arg(c, 0)), GStr(Arg(c, 1))); }
+// remove(path) / _unlink(path): as DeleteFile (the game install is never
+// written: a file that exists only there is EACCES); 0, or -1 with errno
+// ENOENT, or EACCES for a directory or a file that cannot be deleted.
+uint32_t CrtRemove(const std::string& g) {
+  const std::string host = HostPath(g), writable = HostPath(g, PathAccess::kWrite);
+  struct stat st;
+  int err = 0;
+  if (host != writable && stat(host.c_str(), &st) == 0) err = EACCES;
+  else if (unlink(writable.c_str()) != 0) err = errno == ENOENT ? ENOENT : EACCES;
+  if (!err) return 0;
+  Wr32(GuestErrno(), uint32_t(err));
+  return uint32_t(-1);
+}
+HLE64("ucrtbase.dll", remove, kCdecl) { return CrtRemove(GStr(Arg(c, 0))); }
+HLE64("ucrtbase.dll", _unlink, kCdecl) { return CrtRemove(GStr(Arg(c, 0))); }
+
+// _fsopen(path, mode, shflag) / _wfsopen: fopen; sharing modes (_SH_DENYWR,
+// ...) do not apply to the host's files.
+HLE64("ucrtbase.dll", _fsopen, kCdecl) { return Open(GStr(Arg(c, 0)), GStr(Arg(c, 1))); }
+HLE64("ucrtbase.dll", _wfsopen, kCdecl) {
+  return Open(NarrowPath(GWStr(Arg(c, 0))), win32::Narrow(GWStr(Arg(c, 1))));
+}
 HLE64_ONLY("ucrtbase.dll", _wfopen, kCdecl) {
   return Open(NarrowPath(GWStr(Arg(c, 0))), win32::Narrow(GWStr(Arg(c, 1))));
 }
@@ -610,10 +636,11 @@ HLE64_ONLY("ucrtbase.dll", _wfreopen, kCdecl) {
   if (!Arg(c, 0)) FatalF("_wfreopen with a null path (mode change) is not supported");
   return Reopen(NarrowPath(GWStr(Arg(c, 0))), win32::Narrow(GWStr(Arg(c, 1))), Arg(c, 2));
 }
-// fopen_s(&file, path, mode): 0 or the errno.
-HLE64_ONLY("ucrtbase.dll", fopen_s, kCdecl) {
+// fopen_s(&file, path, mode): 0 or the errno; the FILE* at pointer width.
+HLE64("ucrtbase.dll", fopen_s, kCdecl) {
   gaddr f = Open(GStr(Arg(c, 1)), GStr(Arg(c, 2)));
-  Wr64(Arg(c, 0), f);
+  if (g_proc->x64) Wr64(Arg(c, 0), f);
+  else Wr32(Arg(c, 0), uint32_t(f));
   return f ? 0 : Rd32(GuestErrno());
 }
 
@@ -678,6 +705,45 @@ HLE64("ucrtbase.dll", fputs, kCdecl) {
   Stream& s = Must(Arg(c, 1), "fputs");
   std::lock_guard<std::recursive_mutex> l(g_streams_mu);
   return Write(s, str.data(), str.size()) == str.size() ? 0 : uint32_t(EOF);
+}
+
+// getc/fgetc(f): the next byte (text streams: CRLF as LF, ^Z as the end),
+// or EOF. ungetc(ch, f): pushes one byte back. feof(f).
+HLE64("ucrtbase.dll", fgetc, kCdecl) {
+  Stream& s = Must(Arg(c, 0), "fgetc");
+  std::lock_guard<std::recursive_mutex> l(g_streams_mu);
+  return uint32_t(GetC(s));
+}
+HLE64("ucrtbase.dll", getc, kCdecl) {
+  Stream& s = Must(Arg(c, 0), "getc");
+  std::lock_guard<std::recursive_mutex> l(g_streams_mu);
+  return uint32_t(GetC(s));
+}
+HLE64("ucrtbase.dll", ungetc, kCdecl) {
+  const int ch = int32_t(Arg(c, 0));
+  Stream& s = Must(Arg(c, 1), "ungetc");
+  std::lock_guard<std::recursive_mutex> l(g_streams_mu);
+  return uint32_t(ch == EOF ? EOF : std::ungetc(uint8_t(ch), s.f));
+}
+HLE64("ucrtbase.dll", feof, kCdecl) { return std::feof(Must(Arg(c, 0), "feof").f) != 0; }
+
+// _get_stream_buffer_pointers(f, &base, &ptr, &count): where the FILE's
+// buffer fields are (msvcp140's filebuf reads through them). They stay
+// NULL/0 (no buffer the guest can read ahead in), so every access goes
+// through the stdio functions here.
+HLE64("ucrtbase.dll", _get_stream_buffer_pointers, kCdecl) {
+  const gaddr f = Arg(c, 0);
+  Must(f, "_get_stream_buffer_pointers");
+  const uint32_t ps = g_proc->x64 ? 8 : 4;
+  auto put = [&](gaddr out, gaddr v) {
+    if (!out) return;
+    if (ps == 8) Wr64(out, v);
+    else Wr32(out, uint32_t(v));
+  };
+  put(Arg(c, 2), f);           // &_ptr
+  put(Arg(c, 1), f + ps);      // &_base
+  put(Arg(c, 3), f + 2 * ps);  // &_cnt
+  return 0;
 }
 
 HLE64("ucrtbase.dll", fputc, kCdecl) {

@@ -6,6 +6,7 @@
 
 #include <cerrno>
 #include <climits>
+#include <cctype>
 #include <cmath>
 #include <ctime>
 #include <cstdlib>
@@ -331,6 +332,61 @@ HLE64("ucrtbase.dll", _seh_filter_dll, kCdecl) { return 0; }
 // errno: an int per guest thread.
 HLE64("ucrtbase.dll", _errno, kCdecl) { return ErrnoSlot(); }
 
+// ---- the "C" locale's data, as the UCRT exposes it -----------------------------
+// (to msvcp140's locale objects, for one). Only the "C" locale exists here
+// (setlocale), so these never change.
+namespace {
+std::recursive_mutex g_locale_mu;
+// The character classes of "C" (_UPPER 1, _LOWER 2, _DIGIT 4, _SPACE 8,
+// _PUNCT 0x10, _CONTROL 0x20, _BLANK 0x40, _HEX 0x80, _ALPHA 0x100), entry
+// [-1] for EOF; nothing above 0x7F.
+gaddr CtypeTable() {
+  static gaddr t = [] {
+    const gaddr base = HeapAllocProcess(2 * 257, true);
+    for (int ch = 0; ch < 128; ch++) {
+      uint16_t v = 0;
+      if (std::isupper(ch)) v |= 0x1 | 0x100;
+      if (std::islower(ch)) v |= 0x2 | 0x100;
+      if (std::isdigit(ch)) v |= 0x4;
+      if (std::isspace(ch)) v |= 0x8;
+      if (std::ispunct(ch)) v |= 0x10;
+      if (std::iscntrl(ch)) v |= 0x20;
+      if (ch == ' ' || ch == '\t') v |= 0x40;
+      if (std::isxdigit(ch)) v |= 0x80;
+      Wr16(base + 2 * (ch + 1), v);
+    }
+    return base;
+  }();
+  return t + 2;
+}
+}  // namespace
+HLE64("ucrtbase.dll", _lock_locales, kCdecl) {
+  g_locale_mu.lock();
+  return 0;
+}
+HLE64("ucrtbase.dll", _unlock_locales, kCdecl) {
+  g_locale_mu.unlock();
+  return 0;
+}
+// The "C" locale's code pages are CP_ACP (0), as the UCRT's initial locale.
+HLE64("ucrtbase.dll", ___lc_codepage_func, kCdecl) { return 0; }
+HLE64("ucrtbase.dll", ___lc_collate_cp_func, kCdecl) { return 0; }
+// The locale names per category (LC_ALL..LC_TIME): NULL for "C".
+HLE64("ucrtbase.dll", ___lc_locale_name_func, kCdecl) {
+  static gaddr names = HeapAllocProcess(6 * 8, true);
+  return names;
+}
+HLE64("ucrtbase.dll", ___mb_cur_max_func, kCdecl) { return 1; }
+HLE64("ucrtbase.dll", __pctype_func, kCdecl) { return CtypeTable(); }
+// __strncnt(s, n): strnlen.
+HLE64("ucrtbase.dll", __strncnt, kCdecl) {
+  const gaddr p = Arg(c, 0);
+  const uint64_t n = Arg(c, 1);
+  uint64_t i = 0;
+  while (i < n && Rd8(p + i)) i++;
+  return i;
+}
+
 // ---- threads ----------------------------------------------------------------
 
 // _beginthreadex(security, stack, start, arg, flags, &tid): a thread whose
@@ -463,18 +519,23 @@ HLE64("ucrtbase.dll", _configthreadlocale, kCdecl) {
   return uint32_t(old);
 }
 
-// localeconv: the "C" locale's struct lconv (x64 layout: ten char*, eight
-// chars, six wchar_t*).
-HLE64_ONLY("ucrtbase.dll", localeconv, kCdecl) {
+// localeconv: the "C" locale's struct lconv: ten char*, eight chars, six
+// wchar_t* (72 bytes for 32-bit guests, 136 for x64).
+HLE64("ucrtbase.dll", localeconv, kCdecl) {
   static gaddr lc = [] {
-    gaddr p = HeapAllocProcess(136, true);
+    const uint32_t ps = PtrSize(), chars = 10 * ps, wide = (chars + 8 + ps - 1) / ps * ps;
+    gaddr p = HeapAllocProcess(wide + 6 * ps, true);
     gaddr dot = HeapAllocProcess(4, true), empty = dot + 2;
     gaddr wdot = HeapAllocProcess(8, true), wempty = wdot + 4;
     PutStr(dot, ".");
     Wr16(wdot, '.');
-    for (int i = 0; i < 10; i++) Wr64(p + 8 * i, i == 0 ? dot : empty);
-    for (int i = 0; i < 8; i++) Wr8(p + 80 + i, CHAR_MAX);
-    for (int i = 0; i < 6; i++) Wr64(p + 88 + 8 * i, i == 0 ? wdot : wempty);
+    auto ptr = [&](gaddr at, gaddr v) {
+      if (ps == 8) Wr64(at, v);
+      else Wr32(at, uint32_t(v));
+    };
+    for (uint32_t i = 0; i < 10; i++) ptr(p + ps * i, i == 0 ? dot : empty);
+    for (uint32_t i = 0; i < 8; i++) Wr8(p + chars + i, CHAR_MAX);
+    for (uint32_t i = 0; i < 6; i++) ptr(p + wide + ps * i, i == 0 ? wdot : wempty);
     return p;
   }();
   return lc;
@@ -963,6 +1024,23 @@ HLE64_ONLY("ucrtbase.dll", strtoull, kCdecl) {
   });
 }
 HLE64("ucrtbase.dll", atof, kCdecl) { return RetD(c, std::strtod(S(Arg(c, 0)), nullptr)); }
+// _create_locale(category, name): only "C" exists (setlocale): "C" or ""
+// gives a _locale_t ({locinfo, mbcinfo}, never read through here), any
+// other name NULL, as for a locale Windows does not have. The _l
+// functions take one and behave as in "C".
+HLE64("ucrtbase.dll", _create_locale, kCdecl) {
+  const std::string name = Arg(c, 1) ? S(Arg(c, 1)) : std::string();
+  if (!Arg(c, 1) || (name != "C" && !name.empty())) return 0;
+  return HeapAllocProcess(2 * PtrSize(), true);
+}
+HLE64("ucrtbase.dll", _free_locale, kCdecl) {
+  if (gaddr l = Arg(c, 0)) HeapFreeProcess(l);
+  return 0;
+}
+HLE64("ucrtbase.dll", _strtod_l, kCdecl) {
+  return RetD(c, StrTo<double>(Arg(c, 0), Arg(c, 1),
+                               [](const char* p, char** e) { return std::strtod(p, e); }));
+}
 HLE64("ucrtbase.dll", atoi, kCdecl) {
   long long v = std::strtoll(S(Arg(c, 0)), nullptr, 10);
   return uint32_t(int32_t(v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : v));
@@ -1626,6 +1704,7 @@ HLE("msvcrt.dll", setlocale, kCdecl) {
   const std::string n = S(Arg(c, 1));
   return n == "C" ? c_name : 0;
 }
+static const Alias ucrt_setlocale{"ucrtbase.dll", "setlocale", "msvcrt.dll", "setlocale"};
 // _strdate/_strtime(buf): "MM/DD/YY" / "HH:MM:SS", local time.
 HLE("msvcrt.dll", _strdate, kCdecl) {
   std::time_t now = std::time(nullptr);

@@ -1227,6 +1227,13 @@ HLE64("kernel32.dll", InitializeCriticalSectionAndSpinCount, 2) {
   return 1;
 }
 
+// InitializeCriticalSectionEx(cs, spin, flags): the flags (debug info,
+// dynamic spin) change nothing observable here.
+HLE64("kernel32.dll", InitializeCriticalSectionEx, 3) {
+  InitCs(Arg(c, 0), uint32_t(Arg(c, 1)));
+  return 1;
+}
+
 HLE64("kernel32.dll", DeleteCriticalSection, 1) {
   std::lock_guard<std::mutex> l(g_cs_mu);
   g_cs.erase(Arg(c, 0));
