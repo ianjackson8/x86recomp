@@ -90,7 +90,14 @@ T* G(uint32_t va) {
 
 struct Texture;
 
+// SetPrivateData's blocks of a resource, by GUID (D3DSPD_IUNKNOWN, an
+// interface the resource holds a reference to, is not modelled).
+struct PrivateData {
+  std::map<std::array<uint8_t, 16>, std::vector<uint8_t>> blocks;
+};
+
 struct Surface final : com::Tagged<com::TagOf("d3d9.Surface")> {
+  PrivateData priv;
   enum class Kind {
     BackBuffer,    // the swap chain's: gfx render target 0
     DepthStencil,  // gfx depth buffer
@@ -112,6 +119,7 @@ struct Surface final : com::Tagged<com::TagOf("d3d9.Surface")> {
 };
 
 struct Texture final : com::Tagged<com::TagOf("d3d9.Texture")> {
+  PrivateData priv;
   uint32_t device = 0;
   bool cube = false;  // IDirect3DCubeTexture9: six faces of levels each
   uint32_t width = 0, height = 0, levels = 0, usage = 0, format = 0, pool = 0;
@@ -138,6 +146,7 @@ struct Texture final : com::Tagged<com::TagOf("d3d9.Texture")> {
 };
 
 struct Buffer final : com::Tagged<com::TagOf("d3d9.Buffer")> {
+  PrivateData priv;
   uint32_t device = 0;
   bool index = false;
   uint32_t length = 0, usage = 0, pool = 0;
@@ -300,6 +309,14 @@ struct Device final : com::Tagged<com::TagOf("d3d9.Device")> {
   guest::BOOL software_vp = 0;
   std::map<uint32_t, std::array<float, 16>> transforms;
   float clip_planes[6][4] = {};  // SetClipPlane (D3DMAXUSERCLIPPLANES)
+  // SetGammaRamp's ramp (identity until set): read back, not applied to
+  // the output (as the D3D8 and DirectDraw gamma controls).
+  std::array<uint16_t, 768> gamma = [] {
+    std::array<uint16_t, 768> r{};
+    for (int i = 0; i < 256; i++)
+      r[size_t(i)] = r[size_t(256 + i)] = r[size_t(512 + i)] = uint16_t(i * 257);
+    return r;
+  }();
   // Between BeginStateBlock and EndStateBlock: what the setters set.
   std::unique_ptr<StateMask> recording;
   // The device's state at BeginStateBlock (a full StateBlock), put back at

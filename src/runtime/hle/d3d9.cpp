@@ -1050,6 +1050,27 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetSoftwareVertexProcessing", D3DDev9_S
   return D3D_OK;
 }
 
+// SetNPatchMode(segments): 0 is off, what gfx draws (the caps report no
+// N-patches); tessellation itself is not modelled. GetNPatchMode: 0.
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetNPatchMode", D3DDev9_SetNPatchMode, 2) {
+  if (ArgF(c, 1) != 0.0f) FatalF("SetNPatchMode(%g): N-patch tessellation not modelled", ArgF(c, 1));
+  return 0;
+}
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetNPatchMode", D3DDev9_GetNPatchMode, 1) {
+  return RetF(c, 0.0f);
+}
+
+// SetGammaRamp(swapchain, flags, ramp) / GetGammaRamp(swapchain, ramp):
+// D3DGAMMARAMP, 3 x 256 WORDs; kept, not applied (Device::gamma).
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetGammaRamp", D3DDev9_SetGammaRamp, 4) {
+  if (Arg(c, 3)) std::memcpy(Dev(c)->gamma.data(), GPtr(Arg(c, 3)), 1536);
+  return 0;
+}
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetGammaRamp", D3DDev9_GetGammaRamp, 3) {
+  if (Arg(c, 2)) std::memcpy(GPtr(Arg(c, 2)), Dev(c)->gamma.data(), 1536);
+  return 0;
+}
+
 // ValidateDevice(&passes): whether the current states can be drawn, in how
 // many passes. gfx draws any combination of the states in one pass (what
 // D3D9 drivers of shader-model-2+ hardware report too).

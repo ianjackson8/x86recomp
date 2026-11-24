@@ -1173,6 +1173,61 @@ uint32_t GetSurface(Ctx& c, uint32_t face, uint32_t level, uint32_t out) {
   return D3D_OK;
 }
 
+// SetPrivateData(guid, data, size, flags) / GetPrivateData(guid, data,
+// &size) / FreePrivateData(guid), on the resource's PrivateData.
+constexpr uint32_t D3DERR_MOREDATA = 0x887600A3;
+std::array<uint8_t, 16> GuidArg(Ctx& c) {
+  std::array<uint8_t, 16> g;
+  std::memcpy(g.data(), GPtr(Arg(c, 1)), 16);
+  return g;
+}
+uint32_t SetPrivate(Ctx& c, PrivateData& p) {
+  if (!Arg(c, 1)) return D3DERR_INVALIDCALL;
+  if (Arg(c, 4) & 1) FatalF("SetPrivateData with D3DSPD_IUNKNOWN is not modelled yet");
+  const uint32_t n = uint32_t(Arg(c, 3));
+  std::vector<uint8_t> v(n);
+  if (n) std::memcpy(v.data(), GPtr(Arg(c, 2)), n);
+  p.blocks[GuidArg(c)] = std::move(v);
+  return D3D_OK;
+}
+uint32_t GetPrivate(Ctx& c, PrivateData& p) {
+  if (!Arg(c, 1) || !Arg(c, 3)) return D3DERR_INVALIDCALL;
+  auto it = p.blocks.find(GuidArg(c));
+  if (it == p.blocks.end()) return D3DERR_NOTFOUND;
+  const uint32_t n = uint32_t(it->second.size());
+  if (!Arg(c, 2)) {
+    Wr32(Arg(c, 3), n);
+    return D3D_OK;
+  }
+  if (Rd32(Arg(c, 3)) < n) {
+    Wr32(Arg(c, 3), n);
+    return D3DERR_MOREDATA;
+  }
+  if (n) std::memcpy(GPtr(Arg(c, 2)), it->second.data(), n);
+  Wr32(Arg(c, 3), n);
+  return D3D_OK;
+}
+uint32_t FreePrivate(Ctx& c, PrivateData& p) {
+  if (!Arg(c, 1)) return D3DERR_INVALIDCALL;
+  return p.blocks.erase(GuidArg(c)) ? D3D_OK : D3DERR_NOTFOUND;
+}
+#define D3D9_PRIVATE_DATA(Iface, Prefix, obj)                                         \
+  HLE_NAMED("d3d9.dll", Iface "::SetPrivateData", Prefix##_SetPrivateData, 5) {     \
+    return SetPrivate(c, obj(c)->priv);                                             \
+  }                                                                                 \
+  HLE_NAMED("d3d9.dll", Iface "::GetPrivateData", Prefix##_GetPrivateData, 4) {     \
+    return GetPrivate(c, obj(c)->priv);                                             \
+  }                                                                                 \
+  HLE_NAMED("d3d9.dll", Iface "::FreePrivateData", Prefix##_FreePrivateData, 2) {   \
+    return FreePrivate(c, obj(c)->priv);                                            \
+  }
+D3D9_PRIVATE_DATA("IDirect3DTexture9", D3DTex9, Tex)
+D3D9_PRIVATE_DATA("IDirect3DCubeTexture9", D3DCube9, Tex)
+D3D9_PRIVATE_DATA("IDirect3DSurface9", D3DSurf9, Surf)
+D3D9_PRIVATE_DATA("IDirect3DVertexBuffer9", D3DVB9, Buf)
+D3D9_PRIVATE_DATA("IDirect3DIndexBuffer9", D3DIB9, Buf)
+#undef D3D9_PRIVATE_DATA
+
 #define D3D9_TEXTURE_METHODS(Iface, Prefix, rtype)                                    \
   HLE_NAMED("d3d9.dll", Iface "::QueryInterface", Prefix##_QueryInterface, 3) {     \
     return TextureQueryInterface(c);                                                \
