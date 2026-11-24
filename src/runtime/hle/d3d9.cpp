@@ -940,6 +940,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetTransform", D3DDev9_SetTransform, 3)
   std::array<float, 16> m;
   std::memcpy(m.data(), GPtr(Arg(c, 2)), sizeof m);
   Dev(c)->transforms[Arg(c, 1)] = m;
+  if (StateMask* r = Dev(c)->recording.get()) r->transforms.insert(Arg(c, 1));
   return D3D_OK;
 }
 
@@ -951,6 +952,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetClipPlane", D3DDev9_SetClipPlane, 3)
   if (i >= 6 || !Arg(c, 2)) return D3DERR_INVALIDCALL;
   std::memcpy(d->clip_planes[i], GPtr(Arg(c, 2)), sizeof d->clip_planes[i]);
   d->gfx->SetClipPlane(i, d->clip_planes[i]);
+  if (StateMask* r = d->recording.get()) r->clip_planes.set(i);
   return D3D_OK;
 }
 
@@ -976,6 +978,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetTransform", D3DDev9_GetTransform, 3)
 
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetViewport", D3DDev9_SetViewport, 2) {
   Dev(c)->viewport = *G<D3DVIEWPORT9>(Arg(c, 1));
+  if (StateMask* r = Dev(c)->recording.get()) r->viewport = true;
   return D3D_OK;
 }
 
@@ -988,6 +991,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetRenderState", D3DDev9_SetRenderState
   uint32_t s = Arg(c, 1);
   if (s >= 256) return D3DERR_INVALIDCALL;
   Dev(c)->rs.Set(s, Arg(c, 2));
+  if (StateMask* r = Dev(c)->recording.get()) r->rs.set(s);
   return D3D_OK;
 }
 
@@ -1003,6 +1007,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetSamplerState", D3DDev9_SetSamplerSta
   uint32_t t = Arg(c, 2);
   if (s < 0 || t >= 14) return D3DERR_INVALIDCALL;
   Dev(c)->SetSamplerState(uint32_t(s), t, Arg(c, 3));
+  if (StateMask* r = Dev(c)->recording.get()) r->ss.set(size_t(s) * 14 + t);
   return D3D_OK;
 }
 
@@ -1018,6 +1023,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetTextureStageState", D3DDev9_SetTextu
   uint32_t s = Arg(c, 1), t = Arg(c, 2);
   if (s >= 8 || t >= 33) return D3DERR_INVALIDCALL;
   Dev(c)->tss[s][t] = Arg(c, 3);
+  if (StateMask* r = Dev(c)->recording.get()) r->tss.set(s * 33 + t);
   return D3D_OK;
 }
 
@@ -1030,6 +1036,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetTextureStageState", D3DDev9_GetTextu
 
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetScissorRect", D3DDev9_SetScissorRect, 2) {
   Dev(c)->scissor = *G<D3DRECT>(Arg(c, 1));
+  if (StateMask* r = Dev(c)->recording.get()) r->scissor = true;
   return D3D_OK;
 }
 
@@ -1043,6 +1050,15 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetSoftwareVertexProcessing", D3DDev9_S
   return D3D_OK;
 }
 
+// ValidateDevice(&passes): whether the current states can be drawn, in how
+// many passes. gfx draws any combination of the states in one pass (what
+// D3D9 drivers of shader-model-2+ hardware report too).
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::ValidateDevice", D3DDev9_ValidateDevice, 2) {
+  if (!Arg(c, 1)) return D3DERR_INVALIDCALL;
+  Wr32(Arg(c, 1), 1);
+  return D3D_OK;
+}
+
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetSoftwareVertexProcessing", D3DDev9_GetSoftwareVertexProcessing, 1) {
   return uint32_t(Dev(c)->software_vp);
 }
@@ -1050,6 +1066,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetSoftwareVertexProcessing", D3DDev9_G
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetFVF", D3DDev9_SetFVF, 2) {
   Bind(Dev(c)->decl, 0);
   Dev(c)->fvf = Arg(c, 1);
+  if (StateMask* r = Dev(c)->recording.get()) r->vdecl = true;
   return D3D_OK;
 }
 

@@ -5,9 +5,11 @@
 
 #include <array>
 #include <atomic>
+#include <bitset>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -229,6 +231,33 @@ struct SharedHeapUser {
   ~SharedHeapUser();
 };
 
+// Which device states a state block holds: all of them (D3DSBT_ALL), or
+// those set while it was recorded (BeginStateBlock .. EndStateBlock; each
+// setter marks what it sets in Device::recording).
+struct StateMask {
+  std::bitset<256> rs;
+  std::bitset<20 * 14> ss;  // sampler * 14 + type
+  std::bitset<8 * 33> tss;  // stage * 33 + type
+  std::bitset<20> textures;
+  std::bitset<16> streams, stream_freq;
+  bool indices = false;
+  bool vdecl = false;  // the declaration and the FVF (each clears the other)
+  bool vs = false, ps = false;
+  std::bitset<256> vs_f;
+  std::bitset<224> ps_f;
+  std::bitset<16> vs_i, ps_i, vs_b, ps_b;
+  bool all_transforms = false;
+  std::set<uint32_t> transforms;
+  std::bitset<6> clip_planes;
+  bool viewport = false, scissor = false;
+  void SetAll() {
+    rs.set(); ss.set(); tss.set(); textures.set(); streams.set(); stream_freq.set();
+    indices = vdecl = vs = ps = viewport = scissor = all_transforms = true;
+    vs_f.set(); ps_f.set(); vs_i.set(); ps_i.set(); vs_b.set(); ps_b.set();
+    clip_planes.set();
+  }
+};
+
 struct Device final : com::Tagged<com::TagOf("d3d9.Device")> {
   uint32_t d3d = 0;  // IDirect3D9 guest pointer
   guest::D3DDEVICE_CREATION_PARAMETERS creation{};
@@ -271,6 +300,11 @@ struct Device final : com::Tagged<com::TagOf("d3d9.Device")> {
   guest::BOOL software_vp = 0;
   std::map<uint32_t, std::array<float, 16>> transforms;
   float clip_planes[6][4] = {};  // SetClipPlane (D3DMAXUSERCLIPPLANES)
+  // Between BeginStateBlock and EndStateBlock: what the setters set.
+  std::unique_ptr<StateMask> recording;
+  // The device's state at BeginStateBlock (a full StateBlock), put back at
+  // EndStateBlock: in D3D9 recording does not change the device's state.
+  std::shared_ptr<void> before_recording;
   guest::D3DVIEWPORT9 viewport{};
   guest::D3DRECT scissor{};
   float vs_f[256][4] = {}, ps_f[224][4] = {};

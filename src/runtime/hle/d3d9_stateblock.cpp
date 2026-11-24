@@ -9,8 +9,9 @@
 // planes, viewport and scissor rectangle. Bound objects are referenced
 // while captured (Bind), as in D3D9. Apply goes through the device's own
 // setters, so what changed is marked for gfx as after the game's calls.
-// The pixel- and vertex-only kinds and recorded blocks (Begin/
-// EndStateBlock) are not modelled yet: fatal, named.
+// Recorded blocks (Begin/EndStateBlock) hold what was set in between
+// (StateMask). The pixel- and vertex-only kinds are not modelled yet:
+// fatal, named.
 
 #include <cstring>
 #include <map>
@@ -59,66 +60,115 @@ struct StateBlock final : com::Tagged<com::TagOf("d3d9.StateBlock")> {
     Bind(ps, 0);
   }
 
+  // What the block holds (all of it for D3DSBT_ALL; a recorded block what
+  // was set while recording). Capture and Apply touch only that.
+  StateMask mask;
+
   void Capture(const Device& d) {
-    std::memcpy(rs, d.rs.v, sizeof rs);
-    std::memcpy(ss, d.ss, sizeof ss);
-    std::memcpy(tss, d.tss, sizeof tss);
-    for (int i = 0; i < 20; i++) Bind(textures[i], d.textures[i].guest);
+    for (size_t i = 0; i < 256; i++)
+      if (mask.rs[i]) rs[i] = d.rs.v[i];
+    for (size_t s = 0; s < 20; s++)
+      for (size_t t = 0; t < 14; t++)
+        if (mask.ss[s * 14 + t]) ss[s][t] = d.ss[s][t];
+    for (size_t s = 0; s < 8; s++)
+      for (size_t t = 0; t < 33; t++)
+        if (mask.tss[s * 33 + t]) tss[s][t] = d.tss[s][t];
+    for (int i = 0; i < 20; i++)
+      if (mask.textures[i]) Bind(textures[i], d.textures[i].guest);
     for (int i = 0; i < 16; i++) {
-      Bind(streams[i].buffer, d.streams[i].buffer.guest);
-      streams[i].offset = d.streams[i].offset;
-      streams[i].stride = d.streams[i].stride;
-      streams[i].freq = d.streams[i].freq;
+      if (mask.streams[i]) {
+        Bind(streams[i].buffer, d.streams[i].buffer.guest);
+        streams[i].offset = d.streams[i].offset;
+        streams[i].stride = d.streams[i].stride;
+      }
+      if (mask.stream_freq[i]) streams[i].freq = d.streams[i].freq;
     }
-    Bind(indices, d.indices.guest);
-    Bind(decl, d.decl.guest);
-    fvf = d.fvf;
-    Bind(vs, d.vs.guest);
-    Bind(ps, d.ps.guest);
-    std::memcpy(vs_f, d.vs_f, sizeof vs_f);
-    std::memcpy(ps_f, d.ps_f, sizeof ps_f);
-    std::memcpy(vs_i, d.vs_i, sizeof vs_i);
-    std::memcpy(ps_i, d.ps_i, sizeof ps_i);
-    std::memcpy(vs_b, d.vs_b, sizeof vs_b);
-    std::memcpy(ps_b, d.ps_b, sizeof ps_b);
-    transforms = d.transforms;
-    std::memcpy(clip_planes, d.clip_planes, sizeof clip_planes);
-    viewport = d.viewport;
-    scissor = d.scissor;
+    if (mask.indices) Bind(indices, d.indices.guest);
+    if (mask.vdecl) {
+      Bind(decl, d.decl.guest);
+      fvf = d.fvf;
+    }
+    if (mask.vs) Bind(vs, d.vs.guest);
+    if (mask.ps) Bind(ps, d.ps.guest);
+    auto regs = [](auto& dst, const auto& src, const auto& bits) {
+      for (size_t i = 0; i < bits.size(); i++)
+        if (bits[i]) std::memcpy(&dst[i], &src[i], sizeof dst[i]);
+    };
+    regs(vs_f, d.vs_f, mask.vs_f);
+    regs(ps_f, d.ps_f, mask.ps_f);
+    regs(vs_i, d.vs_i, mask.vs_i);
+    regs(ps_i, d.ps_i, mask.ps_i);
+    regs(vs_b, d.vs_b, mask.vs_b);
+    regs(ps_b, d.ps_b, mask.ps_b);
+    if (mask.all_transforms) {
+      transforms = d.transforms;
+    } else {
+      for (uint32_t t : mask.transforms) {
+        auto it = d.transforms.find(t);
+        std::array<float, 16> m{};
+        if (it != d.transforms.end()) m = it->second;
+        else m[0] = m[5] = m[10] = m[15] = 1.0f;  // never set: identity
+        transforms[t] = m;
+      }
+    }
+    for (int i = 0; i < 6; i++)
+      if (mask.clip_planes[i]) std::memcpy(clip_planes[i], d.clip_planes[i], sizeof clip_planes[i]);
+    if (mask.viewport) viewport = d.viewport;
+    if (mask.scissor) scissor = d.scissor;
   }
 
   void Apply(Device& d) const {
-    for (uint32_t s = 0; s < 256; s++) d.rs.Set(s, rs[s]);
+    for (uint32_t i = 0; i < 256; i++)
+      if (mask.rs[i]) d.rs.Set(i, rs[i]);
     for (uint32_t s = 0; s < 20; s++)
-      for (uint32_t t = 0; t < 14; t++) d.SetSamplerState(s, t, ss[s][t]);
-    std::memcpy(d.tss, tss, sizeof tss);
-    for (int i = 0; i < 20; i++) Bind(d.textures[i], textures[i].guest);
+      for (uint32_t t = 0; t < 14; t++)
+        if (mask.ss[s * 14 + t]) d.SetSamplerState(s, t, ss[s][t]);
+    for (size_t s = 0; s < 8; s++)
+      for (size_t t = 0; t < 33; t++)
+        if (mask.tss[s * 33 + t]) d.tss[s][t] = tss[s][t];
+    for (int i = 0; i < 20; i++)
+      if (mask.textures[i]) Bind(d.textures[i], textures[i].guest);
     for (int i = 0; i < 16; i++) {
-      Bind(d.streams[i].buffer, streams[i].buffer.guest);
-      d.streams[i].offset = streams[i].offset;
-      d.streams[i].stride = streams[i].stride;
-      d.streams[i].freq = streams[i].freq;
+      if (mask.streams[i]) {
+        Bind(d.streams[i].buffer, streams[i].buffer.guest);
+        d.streams[i].offset = streams[i].offset;
+        d.streams[i].stride = streams[i].stride;
+      }
+      if (mask.stream_freq[i]) d.streams[i].freq = streams[i].freq;
     }
-    Bind(d.indices, indices.guest);
+    if (mask.indices) Bind(d.indices, indices.guest);
     // A declaration or an FVF: SetFVF clears the declaration and vice versa.
-    Bind(d.decl, decl.guest);
-    d.fvf = fvf;
-    Bind(d.vs, vs.guest);
-    Bind(d.ps, ps.guest);
-    std::memcpy(d.vs_f, vs_f, sizeof vs_f);
-    std::memcpy(d.ps_f, ps_f, sizeof ps_f);
-    std::memcpy(d.vs_i, vs_i, sizeof vs_i);
-    std::memcpy(d.ps_i, ps_i, sizeof ps_i);
-    std::memcpy(d.vs_b, vs_b, sizeof vs_b);
-    std::memcpy(d.ps_b, ps_b, sizeof ps_b);
-    d.vs_f_version++;
-    d.ps_f_version++;
-    d.vs_ib_version++;
-    d.ps_ib_version++;
-    d.transforms = transforms;
-    std::memcpy(d.clip_planes, clip_planes, sizeof clip_planes);
-    d.viewport = viewport;
-    d.scissor = scissor;
+    if (mask.vdecl) {
+      Bind(d.decl, decl.guest);
+      d.fvf = fvf;
+    }
+    if (mask.vs) Bind(d.vs, vs.guest);
+    if (mask.ps) Bind(d.ps, ps.guest);
+    auto regs = [](auto& dst, const auto& src, const auto& bits) {
+      bool any = false;
+      for (size_t i = 0; i < bits.size(); i++)
+        if (bits[i]) {
+          std::memcpy(&dst[i], &src[i], sizeof dst[i]);
+          any = true;
+        }
+      return any;
+    };
+    if (regs(d.vs_f, vs_f, mask.vs_f)) d.vs_f_version++;
+    if (regs(d.ps_f, ps_f, mask.ps_f)) d.ps_f_version++;
+    if (regs(d.vs_i, vs_i, mask.vs_i) | regs(d.vs_b, vs_b, mask.vs_b)) d.vs_ib_version++;
+    if (regs(d.ps_i, ps_i, mask.ps_i) | regs(d.ps_b, ps_b, mask.ps_b)) d.ps_ib_version++;
+    if (mask.all_transforms) {
+      d.transforms = transforms;
+    } else {
+      for (uint32_t t : mask.transforms) d.transforms[t] = transforms.at(t);
+    }
+    for (uint32_t i = 0; i < 6; i++)
+      if (mask.clip_planes[i]) {
+        std::memcpy(d.clip_planes[i], clip_planes[i], sizeof clip_planes[i]);
+        d.gfx->SetClipPlane(i, d.clip_planes[i]);
+      }
+    if (mask.viewport) d.viewport = viewport;
+    if (mask.scissor) d.scissor = scissor;
   }
 };
 
@@ -142,15 +192,39 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::CreateStateBlock", D3DDev9_CreateStateB
   if (!out) return D3DERR_INVALIDCALL;
   auto b = std::make_shared<StateBlock>();
   b->device = Arg(c, 0);
+  b->mask.SetAll();
   b->Capture(*DeviceOf(b->device));
   Wr32(out, com::Publish(b, StateBlockVtable()));
   return D3D_OK;
 }
+// BeginStateBlock / EndStateBlock(&block): the block holds what the
+// setters in between set, with the values they set. In D3D9 those calls
+// do not change the device's state: here they do (they go through the
+// same setters), and EndStateBlock puts back the state saved at Begin.
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::BeginStateBlock", D3DDev9_BeginStateBlock, 1) {
-  FatalF("BeginStateBlock: recorded state blocks are not supported yet");
+  Device* d = DeviceOf(Arg(c, 0));
+  if (d->recording) return D3DERR_INVALIDCALL;
+  auto saved = std::make_shared<StateBlock>();
+  saved->device = Arg(c, 0);
+  saved->mask.SetAll();
+  saved->Capture(*d);
+  d->before_recording = saved;
+  d->recording = std::make_unique<StateMask>();
+  return D3D_OK;
 }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::EndStateBlock", D3DDev9_EndStateBlock, 2) {
-  FatalF("EndStateBlock: recorded state blocks are not supported yet");
+  Device* d = DeviceOf(Arg(c, 0));
+  const uint32_t out = Arg(c, 1);
+  if (!d->recording || !out) return D3DERR_INVALIDCALL;
+  auto b = std::make_shared<StateBlock>();
+  b->device = Arg(c, 0);
+  b->mask = *d->recording;
+  d->recording.reset();
+  b->Capture(*d);
+  std::static_pointer_cast<StateBlock>(d->before_recording)->Apply(*d);
+  d->before_recording.reset();
+  Wr32(out, com::Publish(b, StateBlockVtable()));
+  return D3D_OK;
 }
 
 HLE_NAMED("d3d9.dll", "IDirect3DStateBlock9::AddRef", D3DSB9_AddRef, 1) { return com::AddRef(Arg(c, 0)); }

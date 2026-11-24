@@ -864,6 +864,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetTexture", D3DDev9_SetTexture, 3) {
   int s = SamplerIndex(Arg(c, 1));
   if (s < 0) return D3DERR_INVALIDCALL;
   Bind(Dev(c)->textures[s], Arg(c, 2));
+  if (StateMask* r = Dev(c)->recording.get()) r->textures.set(size_t(s));
   return D3D_OK;
 }
 
@@ -884,6 +885,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetStreamSource", D3DDev9_SetStreamSour
   Bind(s.buffer, Arg(c, 2));
   s.offset = Arg(c, 3);
   s.stride = Arg(c, 4);
+  if (StateMask* r = Dev(c)->recording.get()) r->streams.set(n);
   return D3D_OK;
 }
 
@@ -902,6 +904,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetStreamSourceFreq", D3DDev9_SetStream
   uint32_t n = Arg(c, 1);
   if (n >= 16) return D3DERR_INVALIDCALL;
   Dev(c)->streams[n].freq = Arg(c, 2);
+  if (StateMask* r = Dev(c)->recording.get()) r->stream_freq.set(n);
   return D3D_OK;
 }
 
@@ -914,6 +917,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetStreamSourceFreq", D3DDev9_GetStream
 
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetIndices", D3DDev9_SetIndices, 2) {
   Bind(Dev(c)->indices, Arg(c, 1));
+  if (StateMask* r = Dev(c)->recording.get()) r->indices = true;
   return D3D_OK;
 }
 
@@ -928,6 +932,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetIndices", D3DDev9_GetIndices, 2) {
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetVertexDeclaration", D3DDev9_SetVertexDeclaration, 2) {
   Bind(Dev(c)->decl, Arg(c, 1));
   Dev(c)->fvf = 0;
+  if (StateMask* r = Dev(c)->recording.get()) r->vdecl = true;
   return D3D_OK;
 }
 
@@ -940,6 +945,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetVertexDeclaration", D3DDev9_GetVerte
 
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetVertexShader", D3DDev9_SetVertexShader, 2) {
   Bind(Dev(c)->vs, Arg(c, 1));
+  if (StateMask* r = Dev(c)->recording.get()) r->vs = true;
   return D3D_OK;
 }
 
@@ -952,6 +958,7 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetVertexShader", D3DDev9_GetVertexShad
 
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetPixelShader", D3DDev9_SetPixelShader, 2) {
   Bind(Dev(c)->ps, Arg(c, 1));
+  if (StateMask* r = Dev(c)->recording.get()) r->ps = true;
   return D3D_OK;
 }
 
@@ -1000,34 +1007,42 @@ uint32_t GetBools(Ctx& c, BOOL (&regs)[N]) {
   return D3D_OK;
 }
 
+// While a state block is recorded: the registers [start, start+count) set.
+template <size_t N>
+uint32_t Mark(Ctx& c, uint32_t hr, std::bitset<N> StateMask::*bits) {
+  if (StateMask* r = Dev(c)->recording.get(); r && hr == D3D_OK)
+    for (uint32_t i = 0; i < Arg(c, 3); i++) (r->*bits).set(Arg(c, 1) + i);
+  return hr;
+}
+
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetVertexShaderConstantF", D3DDev9_SetVertexShaderConstantF, 4) {
   Dev(c)->vs_f_version++;
-  return SetConstants(c, Dev(c)->vs_f);
+  return Mark(c, SetConstants(c, Dev(c)->vs_f), &StateMask::vs_f);
 }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetVertexShaderConstantF", D3DDev9_GetVertexShaderConstantF, 4) { return GetConstants(c, Dev(c)->vs_f); }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetVertexShaderConstantI", D3DDev9_SetVertexShaderConstantI, 4) {
   Dev(c)->vs_ib_version++;
-  return SetConstants(c, Dev(c)->vs_i);
+  return Mark(c, SetConstants(c, Dev(c)->vs_i), &StateMask::vs_i);
 }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetVertexShaderConstantI", D3DDev9_GetVertexShaderConstantI, 4) { return GetConstants(c, Dev(c)->vs_i); }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetVertexShaderConstantB", D3DDev9_SetVertexShaderConstantB, 4) {
   Dev(c)->vs_ib_version++;
-  return SetBools(c, Dev(c)->vs_b);
+  return Mark(c, SetBools(c, Dev(c)->vs_b), &StateMask::vs_b);
 }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetVertexShaderConstantB", D3DDev9_GetVertexShaderConstantB, 4) { return GetBools(c, Dev(c)->vs_b); }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetPixelShaderConstantF", D3DDev9_SetPixelShaderConstantF, 4) {
   Dev(c)->ps_f_version++;
-  return SetConstants(c, Dev(c)->ps_f);
+  return Mark(c, SetConstants(c, Dev(c)->ps_f), &StateMask::ps_f);
 }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetPixelShaderConstantF", D3DDev9_GetPixelShaderConstantF, 4) { return GetConstants(c, Dev(c)->ps_f); }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetPixelShaderConstantI", D3DDev9_SetPixelShaderConstantI, 4) {
   Dev(c)->ps_ib_version++;
-  return SetConstants(c, Dev(c)->ps_i);
+  return Mark(c, SetConstants(c, Dev(c)->ps_i), &StateMask::ps_i);
 }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetPixelShaderConstantI", D3DDev9_GetPixelShaderConstantI, 4) { return GetConstants(c, Dev(c)->ps_i); }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetPixelShaderConstantB", D3DDev9_SetPixelShaderConstantB, 4) {
   Dev(c)->ps_ib_version++;
-  return SetBools(c, Dev(c)->ps_b);
+  return Mark(c, SetBools(c, Dev(c)->ps_b), &StateMask::ps_b);
 }
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetPixelShaderConstantB", D3DDev9_GetPixelShaderConstantB, 4) { return GetBools(c, Dev(c)->ps_b); }
 
@@ -1323,6 +1338,12 @@ HLE_NAMED("d3d9.dll", "IDirect3DVertexShader9::GetFunction", D3DVS9_GetFunction,
 }
 HLE_NAMED("d3d9.dll", "IDirect3DPixelShader9::AddRef", D3DPS9_AddRef, 1) { return com::AddRef(Arg(c, 0)); }
 HLE_NAMED("d3d9.dll", "IDirect3DPixelShader9::Release", D3DPS9_Release, 1) { return com::Release(Arg(c, 0)); }
+HLE_NAMED("d3d9.dll", "IDirect3DVertexShader9::GetDevice", D3DVS9_GetDevice, 2) {
+  return GetDeviceOf(c, Obj<Shader>(c, "IDirect3DVertexShader9")->device);
+}
+HLE_NAMED("d3d9.dll", "IDirect3DPixelShader9::GetDevice", D3DPS9_GetDevice, 2) {
+  return GetDeviceOf(c, Obj<Shader>(c, "IDirect3DPixelShader9")->device);
+}
 HLE_NAMED("d3d9.dll", "IDirect3DPixelShader9::GetFunction", D3DPS9_GetFunction, 3) {
   return GetFunction(c, "IDirect3DPixelShader9");
 }
