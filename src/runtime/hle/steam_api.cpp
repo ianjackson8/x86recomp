@@ -451,6 +451,20 @@ HLE_NAMED("steam_api.dll", "ISteamUtils::IsSteamRunningInVR", ISteamUtils_IsStea
 HLE_NAMED("steam_api.dll", "ISteamFriends::GetPersonaName", ISteamFriends_GetPersonaName, 0) {
   return GuestString(Self<ISteamFriends>(c)->GetPersonaName());
 }
+// The friends list. CSteamID results come through the hidden buffer
+// (RetSteamID); a CSteamID argument takes two stack slots.
+HLE_NAMED("steam_api.dll", "ISteamFriends::GetFriendCount", ISteamFriends_GetFriendCount, 1) {
+  return uint32_t(Self<ISteamFriends>(c)->GetFriendCount(int(Arg(c, 0))));
+}
+HLE_NAMED("steam_api.dll", "ISteamFriends::GetFriendByIndex", ISteamFriends_GetFriendByIndex, 3) {
+  return RetSteamID(c, Self<ISteamFriends>(c)->GetFriendByIndex(int(Arg(c, 1)), int(Arg(c, 2))));
+}
+HLE_NAMED("steam_api.dll", "ISteamFriends::GetFriendPersonaName", ISteamFriends_GetFriendPersonaName, 2) {
+  return GuestString(Self<ISteamFriends>(c)->GetFriendPersonaName(CSteamID(uint64(Arg64(c, 0, 0)))));
+}
+HLE_NAMED("steam_api.dll", "ISteamFriends::GetFriendPersonaState", ISteamFriends_GetFriendPersonaState, 2) {
+  return uint32_t(Self<ISteamFriends>(c)->GetFriendPersonaState(CSteamID(uint64(Arg64(c, 0, 0)))));
+}
 HLE_NAMED("steam_api.dll", "ISteamFriends::SetRichPresence", ISteamFriends_SetRichPresence, 2) {
   const std::string key = GStr(Arg(c, 0));
   const std::string value = Arg(c, 1) ? GStr(Arg(c, 1)) : std::string();
@@ -679,8 +693,16 @@ RECOMP_RS(SetCloudEnabledForApp, 1) {
 }
 #undef RECOMP_RS
 
+HLE_NAMED("steam_api.dll", "ISteamApps::GetEarliestPurchaseUnixTime",
+          ISteamApps_GetEarliestPurchaseUnixTime, 1) {
+  return Self<ISteamApps>(c)->GetEarliestPurchaseUnixTime(AppId_t(Arg(c, 0)));
+}
 HLE_NAMED("steam_api.dll", "ISteamUtils::GetAppID", ISteamUtils_GetAppID, 0) {
   return Self<ISteamUtils>(c)->GetAppID();
+}
+// The two-letter country of the user's IP, as the Steam client reports it.
+HLE_NAMED("steam_api.dll", "ISteamUtils::GetIPCountry", ISteamUtils_GetIPCountry, 0) {
+  return GuestString(Self<ISteamUtils>(c)->GetIPCountry());
 }
 HLE_NAMED("steam_api.dll", "ISteamUtils::IsOverlayEnabled", ISteamUtils_IsOverlayEnabled, 0) {
   return Self<ISteamUtils>(c)->IsOverlayEnabled() ? 1 : 0;

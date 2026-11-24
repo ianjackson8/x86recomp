@@ -1633,6 +1633,20 @@ RECOMP_CI2(_CIpow, cr_pow(x, y))
 RECOMP_CI2(_CIfmod, std::fmod(x, y))
 #undef RECOMP_CI1
 #undef RECOMP_CI2
+// The UCRT exports the same intrinsics.
+static const Alias ucrt_alias_CIsin{"ucrtbase.dll", "_CIsin", "msvcrt.dll", "_CIsin"};
+static const Alias ucrt_alias_CIcos{"ucrtbase.dll", "_CIcos", "msvcrt.dll", "_CIcos"};
+static const Alias ucrt_alias_CItan{"ucrtbase.dll", "_CItan", "msvcrt.dll", "_CItan"};
+static const Alias ucrt_alias_CIasin{"ucrtbase.dll", "_CIasin", "msvcrt.dll", "_CIasin"};
+static const Alias ucrt_alias_CIacos{"ucrtbase.dll", "_CIacos", "msvcrt.dll", "_CIacos"};
+static const Alias ucrt_alias_CIatan{"ucrtbase.dll", "_CIatan", "msvcrt.dll", "_CIatan"};
+static const Alias ucrt_alias_CIexp{"ucrtbase.dll", "_CIexp", "msvcrt.dll", "_CIexp"};
+static const Alias ucrt_alias_CIlog{"ucrtbase.dll", "_CIlog", "msvcrt.dll", "_CIlog"};
+static const Alias ucrt_alias_CIlog10{"ucrtbase.dll", "_CIlog10", "msvcrt.dll", "_CIlog10"};
+static const Alias ucrt_alias_CIsqrt{"ucrtbase.dll", "_CIsqrt", "msvcrt.dll", "_CIsqrt"};
+static const Alias ucrt_alias_CIatan2{"ucrtbase.dll", "_CIatan2", "msvcrt.dll", "_CIatan2"};
+static const Alias ucrt_alias_CIpow{"ucrtbase.dll", "_CIpow", "msvcrt.dll", "_CIpow"};
+static const Alias ucrt_alias_CIfmod{"ucrtbase.dll", "_CIfmod", "msvcrt.dll", "_CIfmod"};
 
 // modf(x, &ip) and frexp(x, &e): the double in two slots, then the pointer.
 HLE_NAMED("msvcrt.dll", "modf", MsvcrtModf, kCdecl) {

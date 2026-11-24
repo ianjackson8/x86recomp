@@ -6,6 +6,7 @@
 // later), not the host's printf where they differ: %p is 16 uppercase hex
 // digits, NaNs print as nan, nan(ind) or nan(snan).
 
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -621,13 +622,48 @@ uint32_t CrtRemove(const std::string& g) {
 HLE64("ucrtbase.dll", remove, kCdecl) { return CrtRemove(GStr(Arg(c, 0))); }
 HLE64("ucrtbase.dll", _unlink, kCdecl) { return CrtRemove(GStr(Arg(c, 0))); }
 
+// _stat64(path, &st) / _wstat64: struct _stat64 (no pointers, one layout:
+// st_dev u32, st_ino u16, st_mode u16, st_nlink/uid/gid i16, st_rdev u32
+// at 16, then st_size and the three times as 64-bit at 24..55). As the
+// UCRT fills it: the drive (C: = 2) as dev and rdev, one link, the mode's
+// type, read always, write unless read-only, execute for directories and
+// .exe/.com/.bat/.cmd, the owner's bits copied to group and others.
+uint32_t Stat64(const std::string& g, gaddr out) {
+  struct stat st;
+  const std::string host = HostPath(g);
+  if (stat(host.c_str(), &st) != 0) {
+    Wr32(GuestErrno(), ENOENT);
+    return uint32_t(-1);
+  }
+  const bool dir = S_ISDIR(st.st_mode);
+  uint16_t mode = dir ? 0x4000 : 0x8000;  // _S_IFDIR / _S_IFREG
+  mode |= 0x0100;                          // _S_IREAD
+  if (st.st_mode & S_IWUSR) mode |= 0x0080;  // _S_IWRITE
+  std::string ext = g.size() >= 4 ? g.substr(g.size() - 4) : std::string();
+  for (char& ch : ext) ch = char(std::tolower(uint8_t(ch)));
+  if (dir || ext == ".exe" || ext == ".com" || ext == ".bat" || ext == ".cmd") mode |= 0x0040;
+  mode |= uint16_t((mode & 0x01C0) >> 3 | (mode & 0x01C0) >> 6);
+  std::memset(GPtr(out), 0, 56);
+  Wr32(out, 2);
+  Wr16(out + 6, mode);
+  Wr16(out + 8, 1);
+  Wr32(out + 16, 2);
+  Wr64(out + 24, uint64_t(dir ? 0 : st.st_size));
+  Wr64(out + 32, uint64_t(int64_t(st.st_atime)));
+  Wr64(out + 40, uint64_t(int64_t(st.st_mtime)));
+  Wr64(out + 48, uint64_t(int64_t(st.st_ctime)));
+  return 0;
+}
+HLE64("ucrtbase.dll", _stat64, kCdecl) { return Stat64(GStr(Arg(c, 0)), Arg(c, 1)); }
+HLE64("ucrtbase.dll", _wstat64, kCdecl) { return Stat64(NarrowPath(GWStr(Arg(c, 0))), Arg(c, 1)); }
+
 // _fsopen(path, mode, shflag) / _wfsopen: fopen; sharing modes (_SH_DENYWR,
 // ...) do not apply to the host's files.
 HLE64("ucrtbase.dll", _fsopen, kCdecl) { return Open(GStr(Arg(c, 0)), GStr(Arg(c, 1))); }
 HLE64("ucrtbase.dll", _wfsopen, kCdecl) {
   return Open(NarrowPath(GWStr(Arg(c, 0))), win32::Narrow(GWStr(Arg(c, 1))));
 }
-HLE64_ONLY("ucrtbase.dll", _wfopen, kCdecl) {
+HLE64("ucrtbase.dll", _wfopen, kCdecl) {
   return Open(NarrowPath(GWStr(Arg(c, 0))), win32::Narrow(GWStr(Arg(c, 1))));
 }
 // _wfreopen(path, mode, stream); a null path (changing the mode of the open
@@ -635,6 +671,13 @@ HLE64_ONLY("ucrtbase.dll", _wfopen, kCdecl) {
 HLE64_ONLY("ucrtbase.dll", _wfreopen, kCdecl) {
   if (!Arg(c, 0)) FatalF("_wfreopen with a null path (mode change) is not supported");
   return Reopen(NarrowPath(GWStr(Arg(c, 0))), win32::Narrow(GWStr(Arg(c, 1))), Arg(c, 2));
+}
+// _wfopen_s(&file, path, mode): fopen_s with wide strings.
+HLE64("ucrtbase.dll", _wfopen_s, kCdecl) {
+  gaddr f = Open(NarrowPath(GWStr(Arg(c, 1))), win32::Narrow(GWStr(Arg(c, 2))));
+  if (g_proc->x64) Wr64(Arg(c, 0), f);
+  else Wr32(Arg(c, 0), uint32_t(f));
+  return f ? 0 : Rd32(GuestErrno());
 }
 // fopen_s(&file, path, mode): 0 or the errno; the FILE* at pointer width.
 HLE64("ucrtbase.dll", fopen_s, kCdecl) {

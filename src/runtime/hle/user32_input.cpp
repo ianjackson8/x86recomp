@@ -440,6 +440,18 @@ HLE("user32.dll", LoadImageA, 6) {
   WarnF("LoadImageA: bitmap resource %X not read; returning a handle\n", name);
   return next += 0x10;
 }
+// LoadCursorFromFileA(path): as LoadImageA's cursors from files, an opaque
+// handle (the visible cursor stays the host's); the file must exist.
+HLE("user32.dll", LoadCursorFromFileA, 1) {
+  static std::atomic<uint32_t> next{0x00038000};
+  struct stat st;
+  const std::string path = HostPath(GStr(Arg(c, 0)));
+  if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+    SetLastError(2);  // ERROR_FILE_NOT_FOUND
+    return 0;
+  }
+  return next += 0x10;
+}
 HLE("user32.dll", SetCursor, 1) {
   static uint32_t cur = 0;
   uint32_t old = cur;

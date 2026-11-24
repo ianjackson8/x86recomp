@@ -264,6 +264,11 @@ HLE("vcruntime140.dll", __uncaught_exceptions, kCdecl) {
   if (g_proc->x64) FatalF("__uncaught_exceptions: not tracked for x64 guests yet");
   return 0;
 }
+// __uncaught_exception(): the older form, whether there is one.
+HLE("vcruntime140.dll", __uncaught_exception, kCdecl) {
+  if (g_proc->x64) FatalF("__uncaught_exception: not tracked for x64 guests yet");
+  return 0;
+}
 
 // setjmp/longjmp imported from the C runtime DLL (32-bit). The lifter
 // treats calls to an imported setjmp as setjmp calls (the return address is
