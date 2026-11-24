@@ -1764,7 +1764,10 @@ WaitLog::~WaitLog() {
   // Callers further up, guessed: stack words that point into the image.
   char up[64] = "";
   const PeImage& img = g_proc->img;
-  for (uint32_t a = esp + 4, n = 0, len = 0; a < esp + 256 && n < 4; a += 4) {
+  // Not past the top of the thread's stack (a wait near it would read off
+  // the end).
+  const uint64_t top = std::min<uint64_t>(uint64_t(esp) + 256, CurrentThread()->stack_hi);
+  for (uint32_t a = esp + 4, n = 0, len = 0; a + 4 <= top && n < 4; a += 4) {
     const uint32_t v = Rd32(a);
     if (v > img.image_base && v < img.image_base + img.image_size) {
       len += uint32_t(std::snprintf(up + len, sizeof up - len, " %08X", v));

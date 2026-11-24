@@ -380,7 +380,8 @@ bool FileLog() {
 uint32_t CreateFile(Ctx& c, const std::string& gpath) {
   uint32_t access = uint32_t(Arg(c, 1)), disp = uint32_t(Arg(c, 4));
   if (FileLog())
-    std::fprintf(stderr, "file: %8.2f %s%s\n", TickCount() / 1000.0, gpath.c_str(),
+    std::fprintf(stderr, "file: %8.2f [%04X from %08X] %s%s\n", TickCount() / 1000.0,
+                 CurrentThread()->tid, Rd32(c.esp), gpath.c_str(),
                  (access & 0x40000000) ? " (write)" : "");
   std::string path = HostPath(gpath);
   bool write = access & 0x40000000;  // GENERIC_WRITE
