@@ -395,6 +395,17 @@ bool RecoverCheckedTable(const Program& p, const Function& f, const Insn& jmp,
   ZydisRegister r = m.mem.index;
   uint32_t index = 0;
   bool two_level = false, seen_ja = false;
+  // Unoptimised code keeps the index in a stack slot: `cmp [slot], N; ja;
+  // mov eI, [slot]; jmp [table + eI*4]`. The slot the index was loaded
+  // from, when it was.
+  bool from_slot = false;
+  ZydisDecodedOperand slot{};
+  auto same_slot = [&](const ZydisDecodedOperand& o) {
+    return o.type == ZYDIS_OPERAND_TYPE_MEMORY && o.size == slot.size &&
+           o.mem.base == slot.mem.base && o.mem.index == slot.mem.index &&
+           o.mem.scale == slot.mem.scale && o.mem.disp.value == slot.mem.disp.value &&
+           o.mem.segment == slot.mem.segment;
+  };
   const Insn* in = &jmp;
   for (int steps = 0; steps < 16; steps++) {
     in = Before(f, in->va);
@@ -413,6 +424,13 @@ bool RecoverCheckedTable(const Program& p, const Function& f, const Insn& jmp,
         two_level = true;
         index = static_cast<uint32_t>(o1.mem.disp.value);
         r = o1.mem.base;
+      } else if (!two_level && !from_slot && in->d.mnemonic == ZYDIS_MNEMONIC_MOV &&
+                 o0.type == ZYDIS_OPERAND_TYPE_REGISTER && Full(o0.reg.value) == Full(r) &&
+                 o1.type == ZYDIS_OPERAND_TYPE_MEMORY && o1.size == 32 &&
+                 o1.mem.index == ZYDIS_REGISTER_NONE &&
+                 (o1.mem.base == ZYDIS_REGISTER_EBP || o1.mem.base == ZYDIS_REGISTER_ESP)) {
+        from_slot = true;
+        slot = o1;
       } else if (WritesReg(*in, r) || in->d.meta.branch_type != ZYDIS_BRANCH_TYPE_NONE) {
         return false;
       }
@@ -422,9 +440,9 @@ bool RecoverCheckedTable(const Program& p, const Function& f, const Insn& jmp,
       if (WritesReg(*in, r) || in->d.meta.branch_type != ZYDIS_BRANCH_TYPE_NONE) return false;
       continue;
     }
-    if (in->d.mnemonic != ZYDIS_MNEMONIC_CMP ||
-        o0.type != ZYDIS_OPERAND_TYPE_REGISTER || Full(o0.reg.value) != Full(r))
-      return false;
+    const bool on_index = (o0.type == ZYDIS_OPERAND_TYPE_REGISTER && Full(o0.reg.value) == Full(r)) ||
+                          (from_slot && same_slot(o0));
+    if (in->d.mnemonic != ZYDIS_MNEMONIC_CMP || !on_index) return false;
     uint64_t bound;
     if (o1.type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
       bound = o1.imm.value.u;

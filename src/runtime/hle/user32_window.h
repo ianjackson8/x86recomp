@@ -76,4 +76,7 @@ void ClientAreaSize(uint32_t hwnd, int* w, int* h);
 // <ID>_DISPLAY_EXTRA_MODES (hle/display_modes.h).
 std::vector<ModeSize> DisplayModeSizes();
 
+// The cursor handle SetCursor last set (0: none).
+uint32_t CurrentCursor();
+
 }  // namespace recomp

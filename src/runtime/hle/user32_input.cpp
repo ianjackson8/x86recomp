@@ -159,6 +159,11 @@ uint8_t ScanCodeForVk(uint8_t vk, bool* ext) {
   return k->sc;
 }
 
+namespace {
+std::atomic<uint32_t> g_cursor{0};  // SetCursor's
+}  // namespace
+uint32_t CurrentCursor() { return g_cursor.load(); }
+
 namespace hle {
 namespace {
 
@@ -452,12 +457,8 @@ HLE("user32.dll", LoadCursorFromFileA, 1) {
   }
   return next += 0x10;
 }
-HLE("user32.dll", SetCursor, 1) {
-  static uint32_t cur = 0;
-  uint32_t old = cur;
-  cur = Arg(c, 0);
-  return old;
-}
+HLE("user32.dll", SetCursor, 1) { return g_cursor.exchange(uint32_t(Arg(c, 0))); }
+HLE("user32.dll", GetCursor, 0) { return g_cursor.load(); }
 
 HLE("user32.dll", MessageBeep, 1) { return 1; }
 

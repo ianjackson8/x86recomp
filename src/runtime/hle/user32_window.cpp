@@ -2522,6 +2522,24 @@ HLE("user32.dll", GetCursorPos, 1) {
   return 1;
 }
 
+// GetCursorInfo(CURSORINFO*): {cbSize 20, flags, hCursor, ptScreenPos};
+// CURSOR_SHOWING (1) while ShowCursor's count is 0 or more.
+HLE("user32.dll", GetCursorInfo, 1) {
+  const gaddr ci = Arg(c, 0);
+  if (!ci || Rd32(ci) != 20) {
+    SetLastError(87);  // ERROR_INVALID_PARAMETER
+    return 0;
+  }
+  int32_t x = g_mouse_x, y = g_mouse_y;
+  SyncedCursorPos(&x, &y);
+  const bool showing = g_cursor_count >= 0;
+  Wr32(ci + 4, showing ? 1u : 0u);
+  Wr32(ci + 8, showing ? CurrentCursor() : 0u);
+  Wr32(ci + 12, uint32_t(x));
+  Wr32(ci + 16, uint32_t(y));
+  return 1;
+}
+
 HLE("user32.dll", SetCursorPos, 2) {
   g_mouse_x = g_recentre_x = int32_t(Arg(c, 0));
   g_mouse_y = g_recentre_y = int32_t(Arg(c, 1));
