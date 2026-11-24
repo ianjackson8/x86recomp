@@ -465,6 +465,30 @@ HLE_NAMED("steam_api.dll", "ISteamFriends::GetFriendPersonaName", ISteamFriends_
 HLE_NAMED("steam_api.dll", "ISteamFriends::GetFriendPersonaState", ISteamFriends_GetFriendPersonaState, 2) {
   return uint32_t(Self<ISteamFriends>(c)->GetFriendPersonaState(CSteamID(uint64(Arg64(c, 0, 0)))));
 }
+// Avatars: image handles for ISteamUtils::GetImageSize / GetImageRGBA (0:
+// none, -1: still loading, as the client answers).
+#define RECOMP_AVATAR(which)                                                              \
+  HLE_NAMED("steam_api.dll", "ISteamFriends::Get" #which "FriendAvatar",                  \
+            ISteamFriends_Get##which##FriendAvatar, 2) {                                  \
+    return uint32_t(Self<ISteamFriends>(c)->Get##which##FriendAvatar(CSteamID(uint64(Arg64(c, 0, 0))))); \
+  }
+RECOMP_AVATAR(Small)
+RECOMP_AVATAR(Medium)
+RECOMP_AVATAR(Large)
+#undef RECOMP_AVATAR
+// RequestUserInformation(id, name_only): true while the client is still
+// fetching (PersonaStateChange_t follows). Relationship and nickname of a
+// user.
+HLE_NAMED("steam_api.dll", "ISteamFriends::RequestUserInformation", ISteamFriends_RequestUserInformation, 3) {
+  return Self<ISteamFriends>(c)->RequestUserInformation(CSteamID(uint64(Arg64(c, 0, 0))),
+                                                        (Arg(c, 2) & 0xFF) != 0) ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamFriends::GetFriendRelationship", ISteamFriends_GetFriendRelationship, 2) {
+  return uint32_t(Self<ISteamFriends>(c)->GetFriendRelationship(CSteamID(uint64(Arg64(c, 0, 0)))));
+}
+HLE_NAMED("steam_api.dll", "ISteamFriends::GetPlayerNickname", ISteamFriends_GetPlayerNickname, 2) {
+  return GuestString(Self<ISteamFriends>(c)->GetPlayerNickname(CSteamID(uint64(Arg64(c, 0, 0)))));
+}
 HLE_NAMED("steam_api.dll", "ISteamFriends::SetRichPresence", ISteamFriends_SetRichPresence, 2) {
   const std::string key = GStr(Arg(c, 0));
   const std::string value = Arg(c, 1) ? GStr(Arg(c, 1)) : std::string();
@@ -583,6 +607,45 @@ HLE_NAMED("steam_api.dll", "ISteamUserStats::FindOrCreateLeaderboard",
   return Ret64(c, Self<ISteamUserStats>(c)->FindOrCreateLeaderboard(
                       GStr(Arg(c, 0)).c_str(), ELeaderboardSortMethod(Arg(c, 1)),
                       ELeaderboardDisplayType(Arg(c, 2))));
+}
+// DownloadLeaderboardEntries(board, request, start, end): a call result
+// (LeaderboardScoresDownloaded_t). GetDownloadedLeaderboardEntry(entries,
+// index, &entry, details, max): LeaderboardEntry_t in the guest's layout
+// (packed to 8: m_steamIDUser 0, m_nGlobalRank 8, m_nScore 12, m_cDetails
+// 16, m_hUGC 24; 32 bytes). UploadLeaderboardScore(board, method, score,
+// details, count): a call result too.
+HLE_NAMED("steam_api.dll", "ISteamUserStats::DownloadLeaderboardEntries",
+          ISteamUserStats_DownloadLeaderboardEntries, 5) {
+  return Ret64(c, Self<ISteamUserStats>(c)->DownloadLeaderboardEntries(
+                      Arg64(c, 0, 0), ELeaderboardDataRequest(Arg(c, 2)), int(Arg(c, 3)), int(Arg(c, 4))));
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetDownloadedLeaderboardEntry",
+          ISteamUserStats_GetDownloadedLeaderboardEntry, 6) {
+  LeaderboardEntry_t e{};
+  const int max = int(Arg(c, 5));
+  std::vector<int32> details(size_t(std::max(max, 0)));
+  const bool ok = Self<ISteamUserStats>(c)->GetDownloadedLeaderboardEntry(
+      Arg64(c, 0, 0), int(Arg(c, 2)), &e, details.empty() ? nullptr : details.data(), max);
+  if (ok && Arg(c, 3)) {
+    const gaddr o = Arg(c, 3);
+    std::memset(GPtr(o), 0, 32);
+    Wr64(o, e.m_steamIDUser.ConvertToUint64());
+    Wr32(o + 8, uint32_t(e.m_nGlobalRank));
+    Wr32(o + 12, uint32_t(e.m_nScore));
+    Wr32(o + 16, uint32_t(e.m_cDetails));
+    Wr64(o + 24, e.m_hUGC);
+  }
+  if (ok && Arg(c, 4))
+    for (int i = 0; i < std::min(max, e.m_cDetails); i++) Wr32(Arg(c, 4) + 4 * i, uint32_t(details[size_t(i)]));
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::UploadLeaderboardScore", ISteamUserStats_UploadLeaderboardScore, 6) {
+  const int n = int(Arg(c, 5));
+  std::vector<int32> details(size_t(std::max(n, 0)));
+  for (int i = 0; i < n; i++) details[size_t(i)] = int32(Rd32(Arg(c, 4) + 4 * i));
+  return Ret64(c, Self<ISteamUserStats>(c)->UploadLeaderboardScore(
+                      Arg64(c, 0, 0), ELeaderboardUploadScoreMethod(Arg(c, 2)), int32(Arg(c, 3)),
+                      details.empty() ? nullptr : details.data(), n));
 }
 HLE_NAMED("steam_api.dll", "ISteamUserStats::GetLeaderboardName", ISteamUserStats_GetLeaderboardName, 2) {
   return GuestString(Self<ISteamUserStats>(c)->GetLeaderboardName(Arg64(c, 0, 0)));
@@ -706,6 +769,99 @@ HLE_NAMED("steam_api.dll", "ISteamUGC::GetItemInstallInfo", ISteamUGC_GetItemIns
   }
   return ok ? 1 : 0;
 }
+// Workshop queries: a UGCQueryHandle_t (64-bit, two slots) made, shaped
+// (SetReturn*, language, cache age), sent (SteamUGCQueryCompleted_t
+// through the call result), read and released. SteamUGCDetails_t comes
+// back in the guest's layout: the generated one of the details at the head
+// of SteamUGCRequestUGCDetailsResult_t (steam_callbacks.inc).
+static void DetailsToGuest(const SteamUGCDetails_t& d, gaddr out) {
+  const Layout& l = LayoutOf(SteamUGCRequestUGCDetailsResult_t::k_iCallback);
+  SteamUGCRequestUGCDetailsResult_t r{};
+  r.m_details = d;
+  const uint8_t* src = reinterpret_cast<const uint8_t*>(&r);
+  for (const Field& f : l.fields)
+    if (f.native_off + f.size <= sizeof(SteamUGCDetails_t))
+      std::memcpy(GPtr(out + f.guest_off), src + f.native_off, f.size);
+}
+HLE_NAMED("steam_api.dll", "ISteamUGC::CreateQueryUserUGCRequest", ISteamUGC_CreateQueryUserUGCRequest, 7) {
+  return Ret64(c, Self<ISteamUGC>(c)->CreateQueryUserUGCRequest(
+                      AccountID_t(Arg(c, 0)), EUserUGCList(Arg(c, 1)), EUGCMatchingUGCType(Arg(c, 2)),
+                      EUserUGCListSortOrder(Arg(c, 3)), AppId_t(Arg(c, 4)), AppId_t(Arg(c, 5)),
+                      uint32(Arg(c, 6))));
+}
+// CreateQueryAllUGCRequest: by page or by cursor (two overloads).
+HLE_NAMED("steam_api.dll",
+          "ISteamUGC::CreateQueryAllUGCRequest(EUGCQuery eQueryType, EUGCMatchingUGCType "
+          "eMatchingeMatchingUGCTypeFileType, AppId_t nCreatorAppID, AppId_t nConsumerAppID, uint32 unPage)",
+          ISteamUGC_CreateQueryAllUGCRequestPage, 5) {
+  return Ret64(c, Self<ISteamUGC>(c)->CreateQueryAllUGCRequest(
+                      EUGCQuery(Arg(c, 0)), EUGCMatchingUGCType(Arg(c, 1)), AppId_t(Arg(c, 2)),
+                      AppId_t(Arg(c, 3)), uint32(Arg(c, 4))));
+}
+HLE_NAMED("steam_api.dll",
+          "ISteamUGC::CreateQueryAllUGCRequest(EUGCQuery eQueryType, EUGCMatchingUGCType "
+          "eMatchingeMatchingUGCTypeFileType, AppId_t nCreatorAppID, AppId_t nConsumerAppID, const char "
+          "*pchCursor = NULL)",
+          ISteamUGC_CreateQueryAllUGCRequestCursor, 5) {
+  const std::string cursor = Arg(c, 4) ? GStr(Arg(c, 4)) : std::string();
+  return Ret64(c, Self<ISteamUGC>(c)->CreateQueryAllUGCRequest(
+                      EUGCQuery(Arg(c, 0)), EUGCMatchingUGCType(Arg(c, 1)), AppId_t(Arg(c, 2)),
+                      AppId_t(Arg(c, 3)), Arg(c, 4) ? cursor.c_str() : nullptr));
+}
+HLE_NAMED("steam_api.dll", "ISteamUGC::CreateQueryUGCDetailsRequest", ISteamUGC_CreateQueryUGCDetailsRequest, 2) {
+  const uint32 n = uint32(Arg(c, 1));
+  std::vector<PublishedFileId_t> ids(n);
+  for (uint32 i = 0; i < n; i++) ids[i] = Rd64(Arg(c, 0) + 8 * i);
+  return Ret64(c, Self<ISteamUGC>(c)->CreateQueryUGCDetailsRequest(ids.data(), n));
+}
+HLE_NAMED("steam_api.dll", "ISteamUGC::SendQueryUGCRequest", ISteamUGC_SendQueryUGCRequest, 2) {
+  return Ret64(c, Self<ISteamUGC>(c)->SendQueryUGCRequest(UGCQueryHandle_t(Arg64(c, 0, 0))));
+}
+HLE_NAMED("steam_api.dll", "ISteamUGC::GetQueryUGCResult", ISteamUGC_GetQueryUGCResult, 4) {
+  SteamUGCDetails_t d{};
+  const bool ok = Self<ISteamUGC>(c)->GetQueryUGCResult(UGCQueryHandle_t(Arg64(c, 0, 0)), uint32(Arg(c, 2)), &d);
+  if (ok && Arg(c, 3)) DetailsToGuest(d, Arg(c, 3));
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUGC::GetQueryUGCPreviewURL", ISteamUGC_GetQueryUGCPreviewURL, 5) {
+  const uint32 n = uint32(Arg(c, 4));
+  std::vector<char> buf(std::max<uint32>(n, 1), 0);
+  const bool ok = Self<ISteamUGC>(c)->GetQueryUGCPreviewURL(UGCQueryHandle_t(Arg64(c, 0, 0)),
+                                                            uint32(Arg(c, 2)), buf.data(), n);
+  if (ok && n) std::memcpy(GPtr(Arg(c, 3)), buf.data(), n);
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUGC::GetQueryUGCMetadata", ISteamUGC_GetQueryUGCMetadata, 5) {
+  const uint32 n = uint32(Arg(c, 4));
+  std::vector<char> buf(std::max<uint32>(n, 1), 0);
+  const bool ok = Self<ISteamUGC>(c)->GetQueryUGCMetadata(UGCQueryHandle_t(Arg64(c, 0, 0)),
+                                                          uint32(Arg(c, 2)), buf.data(), n);
+  if (ok && n) std::memcpy(GPtr(Arg(c, 3)), buf.data(), n);
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUGC::ReleaseQueryUGCRequest", ISteamUGC_ReleaseQueryUGCRequest, 2) {
+  return Self<ISteamUGC>(c)->ReleaseQueryUGCRequest(UGCQueryHandle_t(Arg64(c, 0, 0))) ? 1 : 0;
+}
+#define RECOMP_UGC_SET(method, T)                                                         \
+  HLE_NAMED("steam_api.dll", "ISteamUGC::" #method, ISteamUGC_##method, 3) {              \
+    return Self<ISteamUGC>(c)->method(UGCQueryHandle_t(Arg64(c, 0, 0)), T) ? 1 : 0;        \
+  }
+RECOMP_UGC_SET(SetReturnOnlyIDs, (Arg(c, 2) & 0xFF) != 0)
+RECOMP_UGC_SET(SetReturnKeyValueTags, (Arg(c, 2) & 0xFF) != 0)
+RECOMP_UGC_SET(SetReturnLongDescription, (Arg(c, 2) & 0xFF) != 0)
+RECOMP_UGC_SET(SetReturnMetadata, (Arg(c, 2) & 0xFF) != 0)
+RECOMP_UGC_SET(SetReturnChildren, (Arg(c, 2) & 0xFF) != 0)
+RECOMP_UGC_SET(SetReturnAdditionalPreviews, (Arg(c, 2) & 0xFF) != 0)
+RECOMP_UGC_SET(SetReturnTotalOnly, (Arg(c, 2) & 0xFF) != 0)
+RECOMP_UGC_SET(SetReturnPlaytimeStats, uint32(Arg(c, 2)))
+RECOMP_UGC_SET(SetAllowCachedResponse, uint32(Arg(c, 2)))
+RECOMP_UGC_SET(SetLanguage, GStr(Arg(c, 2)).c_str())
+RECOMP_UGC_SET(SetMatchAnyTag, (Arg(c, 2) & 0xFF) != 0)
+RECOMP_UGC_SET(SetRankedByTrendDays, uint32(Arg(c, 2)))
+RECOMP_UGC_SET(AddRequiredTag, GStr(Arg(c, 2)).c_str())
+RECOMP_UGC_SET(AddExcludedTag, GStr(Arg(c, 2)).c_str())
+RECOMP_UGC_SET(SetSearchText, GStr(Arg(c, 2)).c_str())
+#undef RECOMP_UGC_SET
 HLE_NAMED("steam_api.dll", "ISteamUGC::GetItemState", ISteamUGC_GetItemState, 2) {
   return Self<ISteamUGC>(c)->GetItemState(PublishedFileId_t(Arg64(c, 0, 0)));
 }
@@ -792,6 +948,23 @@ RECOMP_RS(SetCloudEnabledForApp, 1) {
 HLE_NAMED("steam_api.dll", "ISteamApps::GetEarliestPurchaseUnixTime",
           ISteamApps_GetEarliestPurchaseUnixTime, 1) {
   return Self<ISteamApps>(c)->GetEarliestPurchaseUnixTime(AppId_t(Arg(c, 0)));
+}
+// GetImageSize(image, &w, &h) / GetImageRGBA(image, buf, size): an image
+// the client holds (avatars), RGBA bytes through a host buffer.
+HLE_NAMED("steam_api.dll", "ISteamUtils::GetImageSize", ISteamUtils_GetImageSize, 3) {
+  uint32 w = 0, h = 0;
+  const bool ok = Self<ISteamUtils>(c)->GetImageSize(int(Arg(c, 0)), &w, &h);
+  if (Arg(c, 1)) Wr32(Arg(c, 1), w);
+  if (Arg(c, 2)) Wr32(Arg(c, 2), h);
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUtils::GetImageRGBA", ISteamUtils_GetImageRGBA, 3) {
+  const int n = int(Arg(c, 2));
+  if (n <= 0) return 0;
+  std::vector<uint8_t> buf(static_cast<size_t>(n));
+  const bool ok = Self<ISteamUtils>(c)->GetImageRGBA(int(Arg(c, 0)), buf.data(), n);
+  if (ok) std::memcpy(GPtr(Arg(c, 1)), buf.data(), size_t(n));
+  return ok ? 1 : 0;
 }
 HLE_NAMED("steam_api.dll", "ISteamUtils::GetAppID", ISteamUtils_GetAppID, 0) {
   return Self<ISteamUtils>(c)->GetAppID();

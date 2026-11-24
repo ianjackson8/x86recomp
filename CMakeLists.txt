@@ -157,6 +157,12 @@ add_library(recomp_runtime SHARED
 target_link_libraries(recomp_runtime PUBLIC recomp_image recomp_x87
                       SDL3::SDL3 Threads::Threads
                       PRIVATE recomp_gfx)  # presentation (hle/present.cpp)
+# urlmon (URLOpenBlockingStreamA) over libcurl, where there is one.
+find_package(CURL QUIET)
+if(CURL_FOUND)
+  target_sources(recomp_runtime PRIVATE src/runtime/hle/urlmon.cpp)
+  target_link_libraries(recomp_runtime PRIVATE CURL::libcurl)
+endif()
 if(APPLE)  # host_font_coretext.cpp: GDI text
   target_link_libraries(recomp_runtime PRIVATE "-framework CoreText" "-framework CoreGraphics"
                         "-framework CoreFoundation")
