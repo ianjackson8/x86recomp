@@ -140,6 +140,25 @@ HLE("advapi32.dll", RegOpenKeyExA, 5) {
   return kErrorSuccess;
 }
 
+// RegOpenKeyA(key, subkey, &result): the 16-bit-era form of RegOpenKeyExA.
+// A NULL or empty subkey gives back the key passed in (documented).
+HLE("advapi32.dll", RegOpenKeyA, 3) {
+  std::lock_guard<std::mutex> l(g_reg_mu);
+  LoadOnce();
+  std::string base = RootName(Arg(c, 0));
+  if (base.empty()) return kErrorInvalidHandle;
+  if (!Arg(c, 1) || GStr(Arg(c, 1)).empty()) {
+    Wr32(Arg(c, 2), uint32_t(Arg(c, 0)));
+    return kErrorSuccess;
+  }
+  std::string path = Join(base, GStr(Arg(c, 1)));
+  if (!g_reg.count(path)) return kErrorFileNotFound;
+  uint32_t h = g_next_hkey += 4;
+  g_open[h] = path;
+  Wr32(Arg(c, 2), h);
+  return kErrorSuccess;
+}
+
 HLE("advapi32.dll", RegCreateKeyExA, 9) {
   std::lock_guard<std::mutex> l(g_reg_mu);
   LoadOnce();
