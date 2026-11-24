@@ -6,7 +6,10 @@
 // later), not the host's printf where they differ: %p is 16 uppercase hex
 // digits, NaNs print as nan, nan(ind) or nan(snan).
 
+#include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <cstdlib>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -364,6 +367,213 @@ uint64_t ArgAfterOpt(const Ctx& c, int i) { return Arg(c, g_proc->x64 ? i : i + 
 bool IsTruncate(uint64_t v) { return v == (g_proc->x64 ? ~0ull : 0xFFFFFFFFull); }
 
 }  // namespace
+
+namespace {
+
+// The scanf engine over an input string, storing through guest pointers
+// taken from `a`. Options: _CRT_INTERNAL_SCANF_SECURECRT (1): %c %s %[
+// take a buffer size after the pointer. Integers wrap as the CRT's do
+// (no saturation); `l` is 32 bits (LLP64/ILP32), I/z/t the guest's
+// pointer size. Returns the assignments made, or EOF (-1) for an input
+// failure before the first one.
+int Scan(const std::string& in, const std::string& fmt, Args a, uint64_t opt) {
+  const bool secure = opt & 1;
+  const size_t ptr_bytes = a.x64 ? 8 : 4;
+  size_t i = 0, f = 0;
+  int assigned = 0;
+  bool any_conversion = false;
+  auto ws = [](char ch) { return ch == ' ' || (ch >= '\t' && ch <= '\r'); };
+  auto skip_ws = [&] { while (i < in.size() && ws(in[i])) i++; };
+  auto store_int = [&](gaddr p, uint64_t v, size_t bytes) {
+    if (bytes == 1) Wr8(p, uint8_t(v));
+    else if (bytes == 2) Wr16(p, uint16_t(v));
+    else if (bytes == 8) Wr64(p, v);
+    else Wr32(p, uint32_t(v));
+  };
+  auto fail = [&] { return assigned == 0 && !any_conversion && i >= in.size() ? -1 : assigned; };
+  while (f < fmt.size()) {
+    const char fc = fmt[f];
+    if (ws(fc)) {
+      while (f < fmt.size() && ws(fmt[f])) f++;
+      skip_ws();
+      continue;
+    }
+    if (fc != '%' || (f + 1 < fmt.size() && fmt[f + 1] == '%')) {
+      if (fc == '%') {
+        f++;
+        skip_ws();
+      }
+      if (i >= in.size()) return fail();
+      if (in[i] != fmt[f]) return assigned;
+      i++, f++;
+      continue;
+    }
+    f++;
+    bool suppress = false;
+    if (f < fmt.size() && fmt[f] == '*') suppress = true, f++;
+    size_t width = 0;
+    while (f < fmt.size() && fmt[f] >= '0' && fmt[f] <= '9') width = width * 10 + size_t(fmt[f++] - '0');
+    size_t bytes = 4;
+    bool wide = false, dbl = false, ldbl = false;
+    for (bool more = true; more && f < fmt.size();) {
+      switch (fmt[f]) {
+        case 'h':
+          if (f + 1 < fmt.size() && fmt[f + 1] == 'h') bytes = 1, f++;
+          else bytes = 2;
+          f++;
+          break;
+        case 'l':
+          if (f + 1 < fmt.size() && fmt[f + 1] == 'l') bytes = 8, f++;
+          else wide = true, dbl = true;
+          f++;
+          break;
+        case 'L': ldbl = true, dbl = true, f++; break;
+        case 'w': wide = true, f++; break;
+        case 'j': bytes = 8, f++; break;
+        case 'z': case 't': bytes = ptr_bytes, f++; break;
+        case 'I':
+          if (fmt.compare(f, 3, "I64") == 0) bytes = 8, f += 3;
+          else if (fmt.compare(f, 3, "I32") == 0) bytes = 4, f += 3;
+          else bytes = ptr_bytes, f++;
+          break;
+        default: more = false;
+      }
+    }
+    (void)ldbl;  // long double is double on Windows
+    if (f >= fmt.size()) return assigned;
+    const char conv = fmt[f++];
+    if (conv == 'n') {
+      if (!suppress) store_int(a.NextPtr(), i, bytes);
+      continue;
+    }
+    if (conv != 'c' && conv != '[') skip_ws();
+    if (i >= in.size()) return fail();
+    const size_t limit = width ? std::min(in.size(), i + width) : in.size();
+    switch (conv) {
+      case 'd': case 'i': case 'u': case 'o': case 'x': case 'X': case 'p': {
+        int base = conv == 'o' ? 8 : (conv == 'x' || conv == 'X' || conv == 'p') ? 16 : conv == 'i' ? 0 : 10;
+        if (conv == 'p') bytes = ptr_bytes;
+        size_t j = i;
+        bool neg = false;
+        if (j < limit && (in[j] == '+' || in[j] == '-')) neg = in[j++] == '-';
+        if ((base == 0 || base == 16) && j + 1 < limit && in[j] == '0' && (in[j + 1] == 'x' || in[j + 1] == 'X'))
+          j += 2, base = 16;
+        else if (base == 0)
+          base = j < limit && in[j] == '0' ? 8 : 10;
+        uint64_t v = 0;
+        const size_t digits_from = j;
+        for (; j < limit; j++) {
+          const char ch = in[j];
+          int d = ch >= '0' && ch <= '9' ? ch - '0' : ch >= 'a' && ch <= 'z' ? ch - 'a' + 10 : ch >= 'A' && ch <= 'Z' ? ch - 'A' + 10 : 99;
+          if (d >= base) break;
+          v = v * uint64_t(base) + uint64_t(d);
+        }
+        if (j == digits_from) {
+          // "0x" with no hex digits after it reads as the 0.
+          if (base == 16 && digits_from >= 2 && in[digits_from - 2] == '0') j = digits_from - 1;
+          else return assigned;
+        }
+        i = j;
+        any_conversion = true;
+        if (!suppress) store_int(a.NextPtr(), neg ? uint64_t(0) - v : v, bytes), assigned++;
+        break;
+      }
+      case 'f': case 'e': case 'g': case 'a': case 'E': case 'G': case 'A': case 'F': {
+        const std::string piece = in.substr(i, limit - i);
+        char* end = nullptr;
+        const double v = std::strtod(piece.c_str(), &end);
+        if (end == piece.c_str()) return assigned;
+        i += size_t(end - piece.c_str());
+        any_conversion = true;
+        if (!suppress) {
+          const gaddr p = a.NextPtr();
+          if (dbl) {
+            uint64_t b;
+            std::memcpy(&b, &v, 8);
+            Wr64(p, b);
+          } else {
+            const float fv = std::strtof(piece.c_str(), nullptr);
+            uint32_t b;
+            std::memcpy(&b, &fv, 4);
+            Wr32(p, b);
+          }
+          assigned++;
+        }
+        break;
+      }
+      case 'c': case 'C': case 's': case 'S': case '[': {
+        if (conv == 'C' || conv == 'S') wide = !wide;
+        std::string set;
+        bool negate = false;
+        if (conv == '[') {
+          if (f < fmt.size() && fmt[f] == '^') negate = true, f++;
+          if (f < fmt.size() && fmt[f] == ']') set += ']', f++;
+          while (f < fmt.size() && fmt[f] != ']') set += fmt[f++];
+          if (f < fmt.size()) f++;
+        }
+        auto in_set = [&](unsigned char ch) {
+          bool hit = false;
+          for (size_t k = 0; k < set.size(); k++) {
+            if (k + 2 < set.size() && set[k + 1] == '-') {
+              unsigned char lo = set[k], hi = set[k + 2];
+              if (lo > hi) std::swap(lo, hi);
+              if (ch >= lo && ch <= hi) hit = true;
+              k += 2;
+            } else if (ch == (unsigned char)set[k]) {
+              hit = true;
+            }
+          }
+          return hit != negate;
+        };
+        const size_t cap = conv == 'c' || conv == 'C' ? (width ? width : 1) : (width ? width : SIZE_MAX);
+        size_t j = i;
+        while (j < in.size() && j - i < cap) {
+          const unsigned char ch = in[j];
+          if ((conv == 's' || conv == 'S') && ws(char(ch))) break;
+          if (conv == '[' && !in_set(ch)) break;
+          j++;
+        }
+        if (j == i) return assigned;
+        if ((conv == 'c' || conv == 'C') && j - i < cap) return fail();
+        const size_t n = j - i;
+        const bool terminate = conv != 'c' && conv != 'C';
+        if (!suppress) {
+          const gaddr p = a.NextPtr();
+          if (secure) {
+            const uint64_t room = a.Next() & 0xFFFFFFFFu;
+            if (n + (terminate ? 1 : 0) > room) {
+              if (room) wide ? Wr16(p, 0) : Wr8(p, 0);
+              return assigned;
+            }
+          }
+          for (size_t k = 0; k < n; k++)
+            wide ? Wr16(p + 2 * k, uint8_t(in[i + k])) : Wr8(p + k, uint8_t(in[i + k]));
+          if (terminate) wide ? Wr16(p + 2 * n, 0) : Wr8(p + n, 0);
+          assigned++;
+        }
+        i = j;
+        any_conversion = true;
+        break;
+      }
+      default:
+        FatalF("guest scanf: conversion %%%c not supported (format \"%s\")", conv, fmt.c_str());
+    }
+  }
+  return assigned;
+}
+
+}  // namespace
+
+// __stdio_common_vsscanf(options, buffer, count, format, locale, va_list):
+// count (size_t)-1 reads to the terminator.
+HLE64("ucrtbase.dll", __stdio_common_vsscanf, kCdecl) {
+  const uint64_t opt = Opt(c);
+  std::string in = GStr(ArgAfterOpt(c, 1));
+  const uint64_t count = ArgAfterOpt(c, 2);
+  const bool all = g_proc->x64 ? count == ~0ull : uint32_t(count) == 0xFFFFFFFFu;
+  if (!all && count < in.size()) in.resize(size_t(count));
+  return uint32_t(Scan(in, GStr(ArgAfterOpt(c, 3)), Args{ArgAfterOpt(c, 5)}, opt));
+}
 
 HLE64("ucrtbase.dll", __acrt_iob_func, kCdecl) { return StdStream(uint32_t(Arg(c, 0))); }
 
