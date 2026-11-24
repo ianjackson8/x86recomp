@@ -50,6 +50,7 @@ void GuestAllocator::FreeGap(uint64_t va, uint64_t* base, uint64_t* size) const 
 uint64_t GuestAllocator::Reserve(uint64_t va, uint64_t size, bool top_down) {
   std::lock_guard<std::recursive_mutex> l(mu_);
   if (!size) return 0;
+  if (top_down_all_) top_down = true;
   size = RoundUp(size, kPage);
   auto fits = [&](uint64_t base) {
     if (base < lo_ || uint64_t(base) + size > hi_) return false;

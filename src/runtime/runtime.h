@@ -135,6 +135,14 @@ struct GameConfig {
   // there is fatal. GuestPathOf maps host paths back.
   std::vector<std::pair<std::string, std::string>> mounts;
 
+  // 32-bit guests: the address space of a large-address-aware EXE on 64-bit
+  // Windows, allocations up to 0xFFFE0000 instead of below 2 GiB
+  // (ARCHITECTURE.md, "Address-space headroom"). Only for an EXE that is
+  // LAA itself (its code declared safe with high addresses) or audited;
+  // <ID>_TOP_DOWN=1 places every allocation as high as possible to
+  // shake out code that is not.
+  bool large_address = false;
+
   // Optional: a Direct3D 9 shader's bytecode before it is translated, to
   // correct a bug in the game's own shaders.
   void (*shader_tokens)(std::vector<uint32_t>& tokens) = nullptr;

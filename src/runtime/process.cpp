@@ -478,8 +478,16 @@ int RunProcess(const GameConfig& game, const std::string& exe_path,
     // Everything above 4 GiB, below the TEBs (runtime.h).
     p.vm.Init(&p.mem, kUserLo64, kTebLo64);
   } else {
-    p.vm.Init(&p.mem, 0x00010000, kThunkBase);
+    // Below the thunk region; a large-address-aware game up to 0xFFFE0000,
+    // the runtime's block (thunks, TEBs, PEB: 0x7F000000-0x80000000) kept
+    // out of it.
+    p.vm.Init(&p.mem, 0x00010000, game.large_address ? 0xFFFE0000u : kThunkBase);
     p.vm.MarkReserved(hle::kModuleRegion, hle::kModuleRegionSize);
+    if (game.large_address) p.vm.MarkReserved(kThunkBase, 0x80000000u - kThunkBase);
+    if (const char* e = Env("TOP_DOWN"); e && *e == '1') {
+      p.vm.set_top_down_all(true);
+      WarnF("guest allocations top-down (TOP_DOWN stress mode)\n");
+    }
   }
   p.vm.MarkReserved(p.img.image_base, p.img.image_size);
   for (const Module& m : p.modules) p.vm.MarkReserved(m.img.image_base, m.img.image_size);

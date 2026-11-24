@@ -656,7 +656,7 @@ HLE64("kernel32.dll", GetSystemInfo, 1) {
   Wr16(si + 0, 0);            // PROCESSOR_ARCHITECTURE_INTEL
   Wr32(si + 4, 0x1000);       // page size
   Wr32(si + 8, 0x00010000);   // lowest application address
-  Wr32(si + 12, 0x7FFEFFFF);  // highest
+  Wr32(si + 12, Game().large_address ? 0xFFFEFFFFu : 0x7FFEFFFFu);  // highest
   Wr32(si + 16, (1u << ncpu) - 1);  // active processor mask
   Wr32(si + 20, ncpu);              // number of processors
   Wr32(si + 24, 586);         // PROCESSOR_INTEL_PENTIUM
@@ -676,13 +676,14 @@ HLE("kernel32.dll", GlobalMemoryStatus, 1) {
   // SIZE_T fields: capped at 2 GiB - 1, as Windows does for a process that
   // is not large address aware.
   const uint64_t phys = uint64_t(Game().total_phys_mb) << 20;
-  auto cap = [](uint64_t v) { return uint32_t(std::min<uint64_t>(v, 0x7FFFFFFF)); };
+  const uint64_t limit = Game().large_address ? 0xFFFFFFFFu : 0x7FFFFFFFu;  // LAA: up to 4 GiB
+  auto cap = [&](uint64_t v) { return uint32_t(std::min<uint64_t>(v, limit)); };
   Wr32(ms + 8, cap(phys));                // total phys
   Wr32(ms + 12, cap(phys / 4 * 3));       // avail phys
   Wr32(ms + 16, cap(phys + 0x20000000));  // total page file
   Wr32(ms + 20, cap(phys));               // avail page file
-  Wr32(ms + 24, 0x7FFE0000);  // total virtual
-  Wr32(ms + 28, 0x70000000);  // avail virtual
+  Wr32(ms + 24, Game().large_address ? 0xFFFE0000u : 0x7FFE0000u);  // total virtual
+  Wr32(ms + 28, Game().large_address ? 0xF0000000u : 0x70000000u);  // avail virtual
   return 0;
 }
 
@@ -712,8 +713,8 @@ HLE64("kernel32.dll", GlobalMemoryStatusEx, 1) {
   Wr64(ms + 16, phys / 4 * 3);       // avail phys
   Wr64(ms + 24, phys + 0x20000000);  // total page file (commit limit)
   Wr64(ms + 32, phys);               // avail page file
-  Wr64(ms + 40, 0x7FFE0000);
-  Wr64(ms + 48, 0x70000000);
+  Wr64(ms + 40, Game().large_address ? 0xFFFE0000u : 0x7FFE0000u);
+  Wr64(ms + 48, Game().large_address ? 0xF0000000u : 0x70000000u);
   Wr64(ms + 56, 0);  // ullAvailExtendedVirtual: reserved
   return 1;
 }

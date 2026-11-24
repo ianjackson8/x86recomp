@@ -28,6 +28,9 @@ class GuestAllocator {
   // at the lowest (or highest with top_down) free address. Returns the base
   // or 0.
   uint64_t Reserve(uint64_t va, uint64_t size, bool top_down = false);
+  // Every reservation without an address top-down (a stress mode: high
+  // addresses first, so code that mishandles them fails early).
+  void set_top_down_all(bool on) { top_down_all_ = on; }
   // Commits pages inside a reservation. Returns false if any part of the
   // range is not reserved.
   bool Commit(uint64_t va, uint64_t size, Prot prot);
@@ -59,6 +62,7 @@ class GuestAllocator {
 
   GuestMemory* mem_ = nullptr;
   uint64_t lo_ = 0, hi_ = 0;
+  bool top_down_all_ = false;
   std::map<uint64_t, uint64_t> regions_;  // base -> size
   mutable std::recursive_mutex mu_;
 };
