@@ -10,7 +10,9 @@
 #include <cmath>
 #include <ctime>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <tuple>
@@ -152,6 +154,77 @@ void SetErrno(uint32_t e) { Wr32(ErrnoSlot(), e); }
 }  // namespace
 
 gaddr GuestErrno() { return ErrnoSlot(); }
+
+// ---- error messages ------------------------------------------------------
+
+namespace {
+
+// The Windows CRT's messages for its errno values (0-42, and the POSIX
+// supplement from 100); others are "Unknown error".
+const char* ErrorText(uint32_t e) {
+  static const char* const kBase[] = {
+      "No error", "Operation not permitted", "No such file or directory", "No such process",
+      "Interrupted function call", "Input/output error", "No such device or address",
+      "Arg list too long", "Exec format error", "Bad file descriptor", "No child processes",
+      "Resource temporarily unavailable", "Not enough space", "Permission denied", "Bad address",
+      "Unknown error", "Resource device", "File exists", "Improper link", "No such device",
+      "Not a directory", "Is a directory", "Invalid argument", "Too many open files in system",
+      "Too many open files", "Inappropriate I/O control operation", "Unknown error",
+      "File too large", "No space left on device", "Invalid seek", "Read-only file system",
+      "Too many links", "Broken pipe", "Domain error", "Result too large", "Unknown error",
+      "Resource deadlock avoided", "Unknown error", "Filename too long", "No locks available",
+      "Function not implemented", "Directory not empty", "Illegal byte sequence"};
+  static const char* const kPosix[] = {
+      "address in use", "address not available", "address family not supported",
+      "connection already in progress", "bad message", "operation canceled",
+      "connection aborted", "connection refused", "connection reset", "destination address required",
+      "host unreachable", "identifier removed", "operation in progress", "already connected",
+      "too many symbolic link levels", "message size", "network down", "network reset",
+      "network unreachable", "no buffer space", "no message available", "no link", "no message",
+      "no protocol option", "no stream resources", "not a stream", "not connected",
+      "state not recoverable", "not a socket", "not supported", "operation not supported",
+      "unknown error", "value too large", "owner dead", "protocol error", "protocol not supported",
+      "wrong protocol type", "stream timeout", "timed out", "text file busy", "operation would block"};
+  if (e < std::size(kBase)) return kBase[e];
+  if (e >= 100 && e - 100 < std::size(kPosix)) return kPosix[e - 100];
+  return "Unknown error";
+}
+
+// strerror's per-thread buffer, as the CRT's (94 bytes).
+gaddr ErrorBuffer() {
+  static std::mutex mu;
+  static std::unordered_map<uint32_t, gaddr> bufs;
+  std::lock_guard<std::mutex> l(mu);
+  gaddr& b = bufs[CurrentThread()->tid];
+  if (!b) b = HeapAllocProcess(96, true);
+  return b;
+}
+
+}  // namespace
+
+HLE64("ucrtbase.dll", strerror, kCdecl) {
+  const uint32_t e = uint32_t(Arg(c, 0));
+  const char* t = ErrorText(e);
+  WarnF("strerror(%u): \"%s\"\n", e, t);  // a game reporting a failure
+  const gaddr b = ErrorBuffer();
+  const size_t n = std::min<size_t>(std::strlen(t), 93);
+  std::memcpy(GPtr(b), t, n);
+  Wr8(b + n, 0);
+  return b;
+}
+
+// strerror_s(buf, size, errnum): truncated to fit; EINVAL (22) without a
+// buffer, ERANGE (34) when it was truncated.
+HLE64("ucrtbase.dll", strerror_s, kCdecl) {
+  const gaddr buf = Arg(c, 0);
+  const uint64_t size = Arg(c, 1);
+  if (!buf || !size) return 22;
+  const char* t = ErrorText(uint32_t(Arg(c, 2)));
+  const size_t n = std::min<size_t>(std::strlen(t), size_t(size - 1));
+  std::memcpy(GPtr(buf), t, n);
+  Wr8(buf + n, 0);
+  return n < std::strlen(t) ? 34 : 0;
+}
 
 // ---- startup and termination ---------------------------------------------
 
