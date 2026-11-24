@@ -129,6 +129,7 @@ add_library(recomp_runtime SHARED
   src/runtime/process.cpp
   src/runtime/watchdog.cpp
   src/runtime/guest_alloc.cpp
+  src/runtime/guest_serial.cpp
   src/runtime/lazy_mem.cpp
   src/runtime/hle/hle.cpp
   src/runtime/hle/kernel32.cpp

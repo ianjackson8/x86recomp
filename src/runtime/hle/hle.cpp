@@ -1,4 +1,6 @@
 #include "runtime/hle/hle.h"
+
+#include "runtime/guest_serial.h"
 #include "runtime/platform.h"
 
 #include <cstdio>
@@ -237,6 +239,7 @@ void CallThunk(Ctx& c, gaddr thunk) {
            "guests only (HLE64_ONLY) (return address %08llX)",
            s->dll.c_str(), s->name.c_str(), ret);
   const Def& d = *s->def;
+  serial::Yield yield;  // <ID>_SERIAL: other guest threads run meanwhile
   // <ID>_TRACE_FILTER=mss32 (substring of "dll!name") narrows the trace.
   static const char* filter = Env("TRACE_FILTER");
   const bool trace = g_trace && (!filter || (s->dll + "!" + s->name).find(filter) !=

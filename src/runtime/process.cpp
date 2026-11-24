@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 
+#include "runtime/guest_serial.h"
 #include "runtime/hle/hle.h"
 #include "runtime/hle/kernel32_state.h"
 #include "runtime/lifted.h"
@@ -129,6 +130,7 @@ uint64_t CallGuest(Ctx& c, gaddr va, std::initializer_list<uint64_t> args) {
     DepthGuard() { hle::t_hle_depth = 0; }
     ~DepthGuard() { hle::t_hle_depth = saved; }
   } guard;
+  serial::Run serial_run;  // <ID>_SERIAL: one guest thread at a time
   if (g_proc->x64) {
     // Win64: the callee finds its stack arguments above the return
     // address and 32 bytes of shadow space (homes for rcx..r9), and rsp
