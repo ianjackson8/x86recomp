@@ -20,6 +20,7 @@
 #include "runtime/hle/hle.h"
 #include "runtime/hle/kernel32_state.h"
 #include "runtime/hle/seh64.h"
+#include "runtime/lifted.h"
 #include "runtime/log.h"
 #include "runtime/runtime.h"
 
@@ -255,6 +256,61 @@ gaddr CurrentSlots() {
 
 // _CxxThrowException(object, throw_info): RaiseException(0xE06D7363,
 // noncontinuable, {magic, object, throw_info, the throw_info's image}).
+// __uncaught_exceptions(): C++ exceptions thrown and not yet caught. 32-bit
+// guests cannot throw yet (C++ exception handling is not modelled for
+// them: a throw is fatal), so none is ever in flight. x64 guests can: the
+// count is not tracked for them yet.
+HLE("vcruntime140.dll", __uncaught_exceptions, kCdecl) {
+  if (g_proc->x64) FatalF("__uncaught_exceptions: not tracked for x64 guests yet");
+  return 0;
+}
+
+// setjmp/longjmp imported from the C runtime DLL (32-bit). The lifter
+// treats calls to an imported setjmp as setjmp calls (the return address is
+// an entry, the caller catches GuestResume: ARCHITECTURE.md). The buffer is
+// MSVC's _JUMP_BUFFER: Ebp, Ebx, Edi, Esi, Esp, Eip, Registration (fs:[0]),
+// TryLevel, Cookie ("VC20"), UnwindFunc, UnwindData[6].
+//
+// longjmp puts back the registers and the SEH chain head and resumes at
+// the setjmp's return with eax = value (1 for 0), in the lifted function
+// whose frame did the setjmp. Frames in between are abandoned without
+// their unwind handlers (__finally blocks, C++ destructors), which
+// longjmp in C code does not run either.
+namespace {
+constexpr uint32_t kJmpCookie = 0x56433230;  // "VC20"
+}  // namespace
+HLE("vcruntime140.dll", _setjmp3, kCdecl) {
+  const gaddr b = Arg(c, 0);
+  Wr32(b + 0, c.ebp);
+  Wr32(b + 4, c.ebx);
+  Wr32(b + 8, c.edi);
+  Wr32(b + 12, c.esi);
+  Wr32(b + 16, c.esp + 4);      // the caller's esp after the return
+  Wr32(b + 20, Rd32(c.esp));    // the return address
+  Wr32(b + 24, Rd32(c.fs_base));
+  Wr32(b + 28, 0xFFFFFFFFu);
+  Wr32(b + 32, kJmpCookie);
+  Wr32(b + 36, Arg(c, 1) ? Arg(c, 2) : 0);
+  return 0;
+}
+HLE("vcruntime140.dll", longjmp, kCdecl) {
+  const gaddr b = Arg(c, 0);
+  const uint32_t value = uint32_t(Arg(c, 1));
+  const uint32_t from = Rd32(c.esp);
+  if (Rd32(b + 32) != kJmpCookie) FatalF("longjmp: not a buffer _setjmp3 filled (from %08X)", from);
+  if (Rd32(b + 36)) FatalF("longjmp: a buffer with an unwind function (C++ or SEH frames) is not supported yet");
+  c.ebp = Rd32(b + 0);
+  c.ebx = Rd32(b + 4);
+  c.edi = Rd32(b + 8);
+  c.esi = Rd32(b + 12);
+  c.esp = Rd32(b + 16);
+  Wr32(c.fs_base, Rd32(b + 24));
+  c.eax = value ? value : 1;
+  throw GuestResume{Rd32(b + 20), c.ebp, from};
+}
+static const Alias msvcrt_setjmp3{"msvcrt.dll", "_setjmp3", "vcruntime140.dll", "_setjmp3"};
+static const Alias msvcrt_longjmp{"msvcrt.dll", "longjmp", "vcruntime140.dll", "longjmp"};
+
 HLE64_ONLY("vcruntime140.dll", _CxxThrowException, kCdecl) {
   gaddr obj = Arg(c, 0), ti = Arg(c, 1);
   if (!obj && !ti) FatalF("guest C++: rethrow (throw;): not supported yet");

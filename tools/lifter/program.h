@@ -59,7 +59,9 @@ struct Program {
   std::map<uint64_t, uint64_t> hooks;         // manifest: hook <va> <end>: the
                                               // game project's hook_<VA>(c)
                                               // runs in place of [va, end)
-  std::set<uint64_t> setjmps;                 // manifest: setjmp functions
+  std::set<uint64_t> setjmps;                 // manifest: setjmp functions,
+                                              // and thunks to setjmp imports
+  std::set<uint64_t> setjmp_iat;              // IAT slots of imported setjmps
                                               // (their callers can be
                                               // resumed by longjmp)
   // x64 functions with a language handler (their exceptions' unwinds end

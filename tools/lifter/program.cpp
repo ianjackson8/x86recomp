@@ -146,7 +146,17 @@ bool Program::Load(const std::string& path, const std::string& symdir,
     if (imp.name == "RaiseException" || imp.name == "RtlUnwind" ||
         imp.name == "RtlRaiseException")
       flags_iat.insert(imp.iat_va);
+    // The CRT's setjmp imported from a DLL (msvcrt, vcruntime140): calls to
+    // it are setjmp calls as for a manifest `setjmp` (32-bit).
+    if (!x64 && (imp.name == "_setjmp3" || imp.name == "_setjmp" || imp.name == "setjmp"))
+      setjmp_iat.insert(imp.iat_va);
   }
+  // Import thunks (jmp [slot]) to an imported setjmp are setjmps too.
+  if (!x64)
+    for (uint64_t e : entries)
+      if (in_text(e) && mem.read<uint8_t>(e) == 0xFF && mem.read<uint8_t>(e + 1) == 0x25 &&
+          setjmp_iat.count(mem.read<uint32_t>(e + 2)))
+        setjmps.insert(e);
   return true;
 }
 
