@@ -5,6 +5,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -473,6 +474,122 @@ RECOMP_WS2_32(57, gethostname, 2) {
 // gethostbyname: names are not resolved (WSAHOST_NOT_FOUND).
 RECOMP_WS2_32(52, gethostbyname, 1) {
   t_wsa_error = 11001;
+  return 0;
+}
+
+// getaddrinfo(node, service, hints, &result) / GetAddrInfoW: the host's
+// resolver, hints and results converted (AF_INET6 is 23 here, 30 on
+// BSD; socket types, protocols and AI_* flags agree). The result is a
+// chain of Windows' 32-bit ADDRINFO {ai_flags, ai_family, ai_socktype,
+// ai_protocol, ai_addrlen, ai_canonname, ai_addr, ai_next}, each node and
+// its sockaddr one block, freed by freeaddrinfo / FreeAddrInfoW. Errors
+// are WSA codes (also WSAGetLastError's).
+namespace {
+uint32_t WsaOfEai(int e) {
+  switch (e) {
+    case EAI_NONAME: return 11001;   // WSAHOST_NOT_FOUND
+    case EAI_AGAIN: return 11002;    // WSATRY_AGAIN
+    case EAI_FAIL: return 11003;     // WSANO_RECOVERY
+    case EAI_FAMILY: return 10047;   // WSAEAFNOSUPPORT
+    case EAI_MEMORY: return 8;       // WSA_NOT_ENOUGH_MEMORY
+    case EAI_SERVICE: return 10109;  // WSATYPE_NOT_FOUND
+    case EAI_SOCKTYPE: return 10044; // WSAESOCKTNOSUPPORT
+    case EAI_BADFLAGS: return 10022; // WSAEINVAL
+    default: return 11003;
+  }
+}
+uint32_t GetAddrInfo(Ctx& c, const std::string* node, const std::string* service, bool wide) {
+  addrinfo hints{}, *res = nullptr;
+  if (gaddr h = Arg(c, 2)) {
+    hints.ai_flags = int32_t(Rd32(h));
+    const uint16_t af = uint16_t(Rd32(h + 4));
+    hints.ai_family = af == 0 ? AF_UNSPEC : HostFamily(af);
+    if (hints.ai_family < 0) return uint32_t(Fail(10047));
+    hints.ai_socktype = int32_t(Rd32(h + 8));
+    hints.ai_protocol = int32_t(Rd32(h + 12));
+  }
+  const int e = getaddrinfo(node ? node->c_str() : nullptr, service ? service->c_str() : nullptr,
+                            Arg(c, 2) ? &hints : nullptr, &res);
+  if (e) {
+    Wr32(Arg(c, 3), 0);
+    const uint32_t w = WsaOfEai(e);
+    t_wsa_error = w;
+    return w;
+  }
+  gaddr first = 0, prev = 0;
+  for (addrinfo* a = res; a; a = a->ai_next) {
+    if (a->ai_family != AF_INET && a->ai_family != AF_INET6) continue;
+    const gaddr n = HeapAllocProcess(32 + 28, true);
+    Wr32(n, uint32_t(a->ai_flags));
+    Wr32(n + 4, a->ai_family == AF_INET ? kAfInet : kAfInet6);
+    Wr32(n + 8, uint32_t(a->ai_socktype));
+    Wr32(n + 12, uint32_t(a->ai_protocol));
+    sockaddr_storage ss{};
+    std::memcpy(&ss, a->ai_addr, std::min<size_t>(a->ai_addrlen, sizeof ss));
+    const gaddr len_va = HeapAllocProcess(4, true);
+    Wr32(len_va, 28);
+    ToGuest(ss, n + 32, len_va);
+    Wr32(n + 16, Rd32(len_va));
+    HeapFreeProcess(len_va);
+    if (a->ai_canonname) {
+      const std::string cn = a->ai_canonname;
+      const gaddr s = HeapAllocProcess((cn.size() + 1) * (wide ? 2 : 1), true);
+      for (size_t i = 0; i < cn.size(); i++) {
+        if (wide) Wr16(s + 2 * i, uint8_t(cn[i]));
+        else Wr8(s + i, uint8_t(cn[i]));
+      }
+      Wr32(n + 20, uint32_t(s));
+    }
+    Wr32(n + 24, uint32_t(n + 32));
+    if (prev) Wr32(prev + 28, uint32_t(n));
+    else first = n;
+    prev = n;
+  }
+  freeaddrinfo(res);
+  Wr32(Arg(c, 3), uint32_t(first));
+  if (!first) {
+    t_wsa_error = 11001;
+    return 11001;
+  }
+  return 0;
+}
+void FreeAddrInfo(gaddr n) {
+  while (n) {
+    const gaddr next = Rd32(n + 28);
+    if (gaddr cn = Rd32(n + 20)) HeapFreeProcess(cn);
+    HeapFreeProcess(n);
+    n = next;
+  }
+}
+std::string Narrowed(gaddr w) {
+  std::string s;
+  for (gaddr p = w;; p += 2) {
+    const char16_t ch = Rd16(p);
+    if (!ch) break;
+    if (ch > 0x7F) FatalF("GetAddrInfoW: non-ASCII host or service names not supported yet");
+    s.push_back(char(ch));
+  }
+  return s;
+}
+}  // namespace
+HLE("ws2_32.dll", getaddrinfo, 4) {
+  std::string node, service;
+  if (Arg(c, 0)) node = GStr(Arg(c, 0));
+  if (Arg(c, 1)) service = GStr(Arg(c, 1));
+  return GetAddrInfo(c, Arg(c, 0) ? &node : nullptr, Arg(c, 1) ? &service : nullptr, false);
+}
+HLE("ws2_32.dll", GetAddrInfoW, 4) {
+  std::string node, service;
+  if (Arg(c, 0)) node = Narrowed(Arg(c, 0));
+  if (Arg(c, 1)) service = Narrowed(Arg(c, 1));
+  return GetAddrInfo(c, Arg(c, 0) ? &node : nullptr, Arg(c, 1) ? &service : nullptr, true);
+}
+HLE("ws2_32.dll", freeaddrinfo, 1) {
+  FreeAddrInfo(Arg(c, 0));
+  return 0;
+}
+HLE("ws2_32.dll", FreeAddrInfoW, 1) {
+  FreeAddrInfo(Arg(c, 0));
   return 0;
 }
 

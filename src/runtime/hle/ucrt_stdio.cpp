@@ -789,6 +789,20 @@ HLE64("ucrtbase.dll", _get_stream_buffer_pointers, kCdecl) {
   return 0;
 }
 
+// _lock_file(f) / _unlock_file(f): every stream operation here already runs
+// under the streams' one recursive lock; these hold it across the guest's
+// own sequence of calls (its _nolock functions included).
+HLE64("ucrtbase.dll", _lock_file, kCdecl) {
+  Must(Arg(c, 0), "_lock_file");
+  g_streams_mu.lock();
+  return 0;
+}
+HLE64("ucrtbase.dll", _unlock_file, kCdecl) {
+  Must(Arg(c, 0), "_unlock_file");
+  g_streams_mu.unlock();
+  return 0;
+}
+
 HLE64("ucrtbase.dll", fputc, kCdecl) {
   char ch = char(Arg(c, 0));
   Stream& s = Must(Arg(c, 1), "fputc");

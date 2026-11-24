@@ -530,6 +530,43 @@ HLE_NAMED("steam_api.dll", "ISteamUserStats::GetAchievement", ISteamUserStats_Ge
 HLE_NAMED("steam_api.dll", "ISteamUserStats::SetAchievement", ISteamUserStats_SetAchievement, 1) {
   return Self<ISteamUserStats>(c)->SetAchievement(GStr(Arg(c, 0)).c_str()) ? 1 : 0;
 }
+// Achievements: count, names, state with unlock time, display
+// attributes ("name", "desc", "hidden"), icon handle, global percentage.
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetNumAchievements", ISteamUserStats_GetNumAchievements, 0) {
+  return Self<ISteamUserStats>(c)->GetNumAchievements();
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetAchievementName", ISteamUserStats_GetAchievementName, 1) {
+  return GuestString(Self<ISteamUserStats>(c)->GetAchievementName(uint32(Arg(c, 0))));
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetAchievementAndUnlockTime",
+          ISteamUserStats_GetAchievementAndUnlockTime, 3) {
+  bool got = false;
+  uint32 when = 0;
+  const bool ok =
+      Self<ISteamUserStats>(c)->GetAchievementAndUnlockTime(GStr(Arg(c, 0)).c_str(), &got, &when);
+  if (ok && Arg(c, 1)) Wr8(Arg(c, 1), got ? 1 : 0);
+  if (ok && Arg(c, 2)) Wr32(Arg(c, 2), when);
+  return ok ? 1 : 0;
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetAchievementDisplayAttribute",
+          ISteamUserStats_GetAchievementDisplayAttribute, 2) {
+  return GuestString(Self<ISteamUserStats>(c)->GetAchievementDisplayAttribute(
+      GStr(Arg(c, 0)).c_str(), GStr(Arg(c, 1)).c_str()));
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetAchievementIcon", ISteamUserStats_GetAchievementIcon, 1) {
+  return uint32_t(Self<ISteamUserStats>(c)->GetAchievementIcon(GStr(Arg(c, 0)).c_str()));
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetAchievementAchievedPercent",
+          ISteamUserStats_GetAchievementAchievedPercent, 2) {
+  float pct = 0;
+  const bool ok = Self<ISteamUserStats>(c)->GetAchievementAchievedPercent(GStr(Arg(c, 0)).c_str(), &pct);
+  if (ok && Arg(c, 1)) {
+    uint32_t b;
+    std::memcpy(&b, &pct, 4);
+    Wr32(Arg(c, 1), b);
+  }
+  return ok ? 1 : 0;
+}
 HLE_NAMED("steam_api.dll", "ISteamUserStats::IndicateAchievementProgress",
           ISteamUserStats_IndicateAchievementProgress, 3) {
   return Self<ISteamUserStats>(c)->IndicateAchievementProgress(

@@ -1160,6 +1160,46 @@ HLE_NAMED("d3d9.dll", "IDirect3DSurface9::GetContainer", D3DSurf9_GetContainer, 
 }
 
 // (pLockedRect, pRect, Flags)
+// GetRenderTargetData(src, dst): a render target (the back buffer, a
+// render-target surface or a render-target texture's level) copied into
+// a same-sized surface in memory (offscreen plain, or a level of a
+// SYSTEMMEM texture), in that surface's format: the source is bound for
+// the read-back, then the device's targets again.
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetRenderTargetData", D3DDev9_GetRenderTargetData, 3) {
+  Device& d = *Dev(c);
+  Surface* src = com::As<Surface>(Arg(c, 1));
+  Surface* dst = com::As<Surface>(Arg(c, 2));
+  if (!src || !dst || src->desc.Width != dst->desc.Width || src->desc.Height != dst->desc.Height)
+    return D3DERR_INVALIDCALL;
+  gfx::ColorTarget color[4] = {};
+  switch (src->kind) {
+    case Surface::Kind::BackBuffer: break;  // texture 0: the back buffer
+    case Surface::Kind::RenderTarget: color[0].tex = src->tex; break;
+    case Surface::Kind::TextureLevel:
+      if (src->texture->cube || !(src->texture->usage & D3DUSAGE_RENDERTARGET)) return D3DERR_INVALIDCALL;
+      color[0] = {src->texture->tex, src->level};
+      break;
+    default: return D3DERR_INVALIDCALL;
+  }
+  uint32_t mem = 0, pitch = 0;
+  if (dst->kind == Surface::Kind::Offscreen) {
+    mem = dst->mem;
+    pitch = dst->pitch;
+  } else if (dst->kind == Surface::Kind::TextureLevel && dst->texture->pool == D3DPOOL_SYSTEMMEM) {
+    Texture::Level& l = dst->texture->At(uint32_t(dst->face), uint32_t(dst->level));
+    mem = LevelMem(*dst->texture, l);
+    pitch = l.pitch;
+  } else {
+    return D3DERR_INVALIDCALL;
+  }
+  if (!mem) return E_OUTOFMEMORY;
+  d.gfx->SetRenderTargets(color, 0);
+  d.gfx->ReadBack({0, 0, int32_t(dst->desc.Width), int32_t(dst->desc.Height)}, GPtr(mem), pitch,
+                  FormatFromD3D(dst->desc.Format));
+  BindTargets(d);
+  return D3D_OK;
+}
+
 HLE_NAMED("d3d9.dll", "IDirect3DSurface9::LockRect", D3DSurf9_LockRect, 4) {
   Surface* s = Surf(c);
   if (s->kind == Surface::Kind::TextureLevel)
