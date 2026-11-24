@@ -486,6 +486,21 @@ HLE("gdi32.dll", GetCharWidthI, 5) {
   return 1;
 }
 
+// AddFontResourceEx(path, flags, 0): a font file's faces for this process
+// (FR_PRIVATE or not, they are the process's only); the number added, 0 if
+// the file is not a font. RemoveFontResourceEx: nonzero if it was added.
+uint32_t AddFontFile(const std::string& guest_path) {
+  return uint32_t(host_font::RegisterFile(HostPath(guest_path)));
+}
+HLE("gdi32.dll", AddFontResourceExA, 3) { return AddFontFile(GStr(Arg(c, 0))); }
+HLE("gdi32.dll", AddFontResourceExW, 3) { return AddFontFile(NarrowPath(GWStr(Arg(c, 0)))); }
+HLE("gdi32.dll", RemoveFontResourceExA, 3) {
+  return host_font::UnregisterFile(HostPath(GStr(Arg(c, 0)))) ? 1 : 0;
+}
+HLE("gdi32.dll", RemoveFontResourceExW, 3) {
+  return host_font::UnregisterFile(HostPath(NarrowPath(GWStr(Arg(c, 0))))) ? 1 : 0;
+}
+
 // GetFontUnicodeRanges(hdc, glyphset): the characters of the Basic
 // Multilingual Plane the face maps (GLYPHSET: cbThis, flAccel,
 // cGlyphsSupported, cRanges, then WCRANGE {wcLow, cGlyphs} each); returns

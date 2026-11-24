@@ -59,8 +59,15 @@ class Font {
   virtual std::vector<uint8_t> Render(uint16_t glyph, const GlyphMetrics& m) const = 0;
 };
 
-// The font for `d`; the face falls back to the host's default when it is
-// not installed (the face used is in metrics().face).
+// The font for `d`, its face matched by family name (as GDI's
+// lfFaceName), else by full or PostScript name; it falls back to the
+// host's default when not installed (the face used is in metrics().face).
 std::shared_ptr<const Font> Create(const Desc& d);
+
+// A font file (TrueType, OpenType, collections) made available to Create
+// for this process (GDI's AddFontResourceEx(FR_PRIVATE)): the number of
+// faces it holds, 0 if it cannot be read. UnregisterFile undoes it.
+int RegisterFile(const std::string& host_path);
+bool UnregisterFile(const std::string& host_path);
 
 }  // namespace recomp::host_font

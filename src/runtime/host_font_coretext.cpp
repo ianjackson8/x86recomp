@@ -138,7 +138,26 @@ bool Available() { return true; }
 std::shared_ptr<const Font> Create(const Desc& d) {
   const std::u16string want = d.face.empty() ? u"Arial" : d.face;
   CFStringRef name = CfString(want);
-  CTFontRef base = CTFontCreateWithName(name, 16.0, nullptr);
+  // GDI matches family names: a descriptor for the family first (one
+  // registered for the process included), then CoreText's name lookup.
+  CTFontRef base = nullptr;
+  {
+    const void* keys[] = {kCTFontFamilyNameAttribute};
+    const void* vals[] = {name};
+    CFDictionaryRef attrs = CFDictionaryCreate(nullptr, keys, vals, 1, &kCFTypeDictionaryKeyCallBacks,
+                                               &kCFTypeDictionaryValueCallBacks);
+    CTFontDescriptorRef desc = CTFontDescriptorCreateWithAttributes(attrs);
+    CFRelease(attrs);
+    const void* mkeys[] = {kCTFontFamilyNameAttribute};
+    CFSetRef mandatory = CFSetCreate(nullptr, mkeys, 1, &kCFTypeSetCallBacks);
+    if (CTFontDescriptorRef match = CTFontDescriptorCreateMatchingFontDescriptor(desc, mandatory)) {
+      base = CTFontCreateWithFontDescriptor(match, 16.0, nullptr);
+      CFRelease(match);
+    }
+    CFRelease(mandatory);
+    CFRelease(desc);
+  }
+  if (!base) base = CTFontCreateWithName(name, 16.0, nullptr);
   CFRelease(name);
   if (!base) FatalF("host_font: CTFontCreateWithName failed");
 
@@ -219,6 +238,42 @@ std::shared_ptr<const Font> Create(const Desc& d) {
   return std::make_shared<CtFont>(f, std::move(m), d.antialias);
 }
 
+namespace {
+CFURLRef FileUrl(const std::string& path) {
+  return CFURLCreateFromFileSystemRepresentation(nullptr, reinterpret_cast<const UInt8*>(path.data()),
+                                                 CFIndex(path.size()), false);
+}
+}  // namespace
+
+int RegisterFile(const std::string& host_path) {
+  CFURLRef url = FileUrl(host_path);
+  if (!url) return 0;
+  int faces = 0;
+  if (CFArrayRef descs = CTFontManagerCreateFontDescriptorsFromURL(url)) {
+    faces = int(CFArrayGetCount(descs));
+    CFRelease(descs);
+  }
+  if (faces) {
+    CFErrorRef err = nullptr;
+    if (!CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, &err)) {
+      // Registered already (by an earlier call): still available.
+      const bool already = err && CFErrorGetCode(err) == kCTFontManagerErrorAlreadyRegistered;
+      if (!already) faces = 0;
+    }
+    if (err) CFRelease(err);
+  }
+  CFRelease(url);
+  return faces;
+}
+
+bool UnregisterFile(const std::string& host_path) {
+  CFURLRef url = FileUrl(host_path);
+  if (!url) return false;
+  const bool ok = CTFontManagerUnregisterFontsForURL(url, kCTFontManagerScopeProcess, nullptr);
+  CFRelease(url);
+  return ok;
+}
+
 }  // namespace recomp::host_font
 
 #else  // !__APPLE__
@@ -230,6 +285,10 @@ bool Available() { return false; }
 std::shared_ptr<const Font> Create(const Desc&) {
   FatalF("host_font: no font engine on this host yet (GDI text needs one)");
 }
+int RegisterFile(const std::string&) {
+  FatalF("host_font: no font engine on this host yet (AddFontResourceEx needs one)");
+}
+bool UnregisterFile(const std::string&) { return false; }
 }  // namespace recomp::host_font
 
 #endif
