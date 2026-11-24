@@ -31,6 +31,7 @@
 // - SteamAPI_WriteMiniDump: nothing (a Windows minidump of a recompiled
 //   process means nothing to Steam's crash reporting).
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -520,6 +521,163 @@ HLE_NAMED("steam_api.dll", "ISteamUserStats::IndicateAchievementProgress",
   return Self<ISteamUserStats>(c)->IndicateAchievementProgress(
              GStr(Arg(c, 0)).c_str(), uint32(Arg(c, 1)), uint32(Arg(c, 2))) ? 1 : 0;
 }
+
+// Leaderboards: found (or created) asynchronously, LeaderboardFindResult_t
+// through the call result; a SteamLeaderboard_t is 64-bit (two slots).
+HLE_NAMED("steam_api.dll", "ISteamUserStats::FindLeaderboard", ISteamUserStats_FindLeaderboard, 1) {
+  return Ret64(c, Self<ISteamUserStats>(c)->FindLeaderboard(GStr(Arg(c, 0)).c_str()));
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::FindOrCreateLeaderboard",
+          ISteamUserStats_FindOrCreateLeaderboard, 3) {
+  return Ret64(c, Self<ISteamUserStats>(c)->FindOrCreateLeaderboard(
+                      GStr(Arg(c, 0)).c_str(), ELeaderboardSortMethod(Arg(c, 1)),
+                      ELeaderboardDisplayType(Arg(c, 2))));
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetLeaderboardName", ISteamUserStats_GetLeaderboardName, 2) {
+  return GuestString(Self<ISteamUserStats>(c)->GetLeaderboardName(Arg64(c, 0, 0)));
+}
+HLE_NAMED("steam_api.dll", "ISteamUserStats::GetLeaderboardEntryCount",
+          ISteamUserStats_GetLeaderboardEntryCount, 2) {
+  return uint32_t(Self<ISteamUserStats>(c)->GetLeaderboardEntryCount(Arg64(c, 0, 0)));
+}
+
+// ISteamHTTP: the game's web requests, made by the Steam client. Results
+// arrive as HTTPRequestCompleted_t call results. Request handles are 32-bit.
+#define RECOMP_HTTP(method, n) \
+  HLE_NAMED("steam_api.dll", "ISteamHTTP::" #method, ISteamHTTP_##method, n)
+RECOMP_HTTP(CreateHTTPRequest, 2) {
+  return Self<ISteamHTTP>(c)->CreateHTTPRequest(EHTTPMethod(Arg(c, 0)), GStr(Arg(c, 1)).c_str());
+}
+RECOMP_HTTP(SetHTTPRequestContextValue, 3) {
+  return Self<ISteamHTTP>(c)->SetHTTPRequestContextValue(HTTPRequestHandle(Arg(c, 0)),
+                                                         Arg64(c, 1, 1)) ? 1 : 0;
+}
+RECOMP_HTTP(SetHTTPRequestNetworkActivityTimeout, 2) {
+  return Self<ISteamHTTP>(c)->SetHTTPRequestNetworkActivityTimeout(HTTPRequestHandle(Arg(c, 0)),
+                                                                   uint32(Arg(c, 1))) ? 1 : 0;
+}
+RECOMP_HTTP(SetHTTPRequestHeaderValue, 3) {
+  return Self<ISteamHTTP>(c)->SetHTTPRequestHeaderValue(
+             HTTPRequestHandle(Arg(c, 0)), GStr(Arg(c, 1)).c_str(), GStr(Arg(c, 2)).c_str()) ? 1 : 0;
+}
+RECOMP_HTTP(SetHTTPRequestGetOrPostParameter, 3) {
+  return Self<ISteamHTTP>(c)->SetHTTPRequestGetOrPostParameter(
+             HTTPRequestHandle(Arg(c, 0)), GStr(Arg(c, 1)).c_str(), GStr(Arg(c, 2)).c_str()) ? 1 : 0;
+}
+RECOMP_HTTP(SetHTTPRequestUserAgentInfo, 2) {
+  return Self<ISteamHTTP>(c)->SetHTTPRequestUserAgentInfo(HTTPRequestHandle(Arg(c, 0)),
+                                                          GStr(Arg(c, 1)).c_str()) ? 1 : 0;
+}
+RECOMP_HTTP(SetHTTPRequestRawPostBody, 4) {
+  const uint32 n = uint32(Arg(c, 3));
+  std::vector<uint8_t> body(n);
+  if (n) std::memcpy(body.data(), GPtr(Arg(c, 2)), n);
+  return Self<ISteamHTTP>(c)->SetHTTPRequestRawPostBody(HTTPRequestHandle(Arg(c, 0)),
+                                                        GStr(Arg(c, 1)).c_str(), body.data(), n) ? 1 : 0;
+}
+// SendHTTPRequest(request, &call): the SteamAPICall_t for the call result.
+RECOMP_HTTP(SendHTTPRequest, 2) {
+  SteamAPICall_t call = 0;
+  const bool ok = Self<ISteamHTTP>(c)->SendHTTPRequest(HTTPRequestHandle(Arg(c, 0)), &call);
+  if (Arg(c, 1)) Wr64(Arg(c, 1), call);
+  return ok ? 1 : 0;
+}
+RECOMP_HTTP(GetHTTPResponseBodySize, 2) {
+  uint32 n = 0;
+  const bool ok = Self<ISteamHTTP>(c)->GetHTTPResponseBodySize(HTTPRequestHandle(Arg(c, 0)), &n);
+  if (Arg(c, 1)) Wr32(Arg(c, 1), n);
+  return ok ? 1 : 0;
+}
+RECOMP_HTTP(GetHTTPResponseBodyData, 3) {
+  const uint32 n = uint32(Arg(c, 2));
+  std::vector<uint8_t> buf(n);
+  const bool ok = Self<ISteamHTTP>(c)->GetHTTPResponseBodyData(HTTPRequestHandle(Arg(c, 0)),
+                                                               buf.data(), n);
+  if (ok && n) std::memcpy(GPtr(Arg(c, 1)), buf.data(), n);
+  return ok ? 1 : 0;
+}
+RECOMP_HTTP(GetHTTPResponseHeaderSize, 3) {
+  uint32 n = 0;
+  const bool ok = Self<ISteamHTTP>(c)->GetHTTPResponseHeaderSize(HTTPRequestHandle(Arg(c, 0)),
+                                                                 GStr(Arg(c, 1)).c_str(), &n);
+  if (Arg(c, 2)) Wr32(Arg(c, 2), n);
+  return ok ? 1 : 0;
+}
+RECOMP_HTTP(GetHTTPResponseHeaderValue, 4) {
+  const uint32 n = uint32(Arg(c, 3));
+  std::vector<uint8_t> buf(n);
+  const bool ok = Self<ISteamHTTP>(c)->GetHTTPResponseHeaderValue(
+      HTTPRequestHandle(Arg(c, 0)), GStr(Arg(c, 1)).c_str(), buf.data(), n);
+  if (ok && n) std::memcpy(GPtr(Arg(c, 2)), buf.data(), n);
+  return ok ? 1 : 0;
+}
+RECOMP_HTTP(ReleaseHTTPRequest, 1) {
+  return Self<ISteamHTTP>(c)->ReleaseHTTPRequest(HTTPRequestHandle(Arg(c, 0))) ? 1 : 0;
+}
+#undef RECOMP_HTTP
+
+// ISteamRemoteStorage: Steam Cloud files, read and written by the client.
+#define RECOMP_RS(method, n) \
+  HLE_NAMED("steam_api.dll", "ISteamRemoteStorage::" #method, ISteamRemoteStorage_##method, n)
+RECOMP_RS(FileExists, 1) {
+  return Self<ISteamRemoteStorage>(c)->FileExists(GStr(Arg(c, 0)).c_str()) ? 1 : 0;
+}
+RECOMP_RS(FilePersisted, 1) {
+  return Self<ISteamRemoteStorage>(c)->FilePersisted(GStr(Arg(c, 0)).c_str()) ? 1 : 0;
+}
+RECOMP_RS(GetFileSize, 1) {
+  return uint32_t(Self<ISteamRemoteStorage>(c)->GetFileSize(GStr(Arg(c, 0)).c_str()));
+}
+RECOMP_RS(GetFileTimestamp, 1) {
+  return Ret64(c, uint64_t(Self<ISteamRemoteStorage>(c)->GetFileTimestamp(GStr(Arg(c, 0)).c_str())));
+}
+// FileRead(name, buf, size) / FileWrite(name, data, size): through a host
+// buffer (guest memory is not handed to the native library).
+RECOMP_RS(FileRead, 3) {
+  const int32 n = int32(Arg(c, 2));
+  if (n <= 0) return 0;
+  std::vector<uint8_t> buf(static_cast<size_t>(n));
+  const int32 got = Self<ISteamRemoteStorage>(c)->FileRead(GStr(Arg(c, 0)).c_str(), buf.data(), n);
+  if (got > 0) std::memcpy(GPtr(Arg(c, 1)), buf.data(), size_t(got));
+  return uint32_t(got);
+}
+RECOMP_RS(FileWrite, 3) {
+  const int32 n = int32(Arg(c, 2));
+  std::vector<uint8_t> buf(size_t(std::max(n, 0)));
+  if (n > 0) std::memcpy(buf.data(), GPtr(Arg(c, 1)), size_t(n));
+  return Self<ISteamRemoteStorage>(c)->FileWrite(GStr(Arg(c, 0)).c_str(), buf.data(), n) ? 1 : 0;
+}
+RECOMP_RS(FileForget, 1) {
+  return Self<ISteamRemoteStorage>(c)->FileForget(GStr(Arg(c, 0)).c_str()) ? 1 : 0;
+}
+RECOMP_RS(FileDelete, 1) {
+  return Self<ISteamRemoteStorage>(c)->FileDelete(GStr(Arg(c, 0)).c_str()) ? 1 : 0;
+}
+RECOMP_RS(GetFileCount, 0) { return uint32_t(Self<ISteamRemoteStorage>(c)->GetFileCount()); }
+RECOMP_RS(GetFileNameAndSize, 2) {
+  int32 size = 0;
+  const char* name = Self<ISteamRemoteStorage>(c)->GetFileNameAndSize(int(Arg(c, 0)), &size);
+  if (Arg(c, 1)) Wr32(Arg(c, 1), uint32_t(size));
+  return GuestString(name);
+}
+RECOMP_RS(GetQuota, 2) {
+  uint64 total = 0, avail = 0;
+  const bool ok = Self<ISteamRemoteStorage>(c)->GetQuota(&total, &avail);
+  if (Arg(c, 0)) Wr64(Arg(c, 0), total);
+  if (Arg(c, 1)) Wr64(Arg(c, 1), avail);
+  return ok ? 1 : 0;
+}
+RECOMP_RS(IsCloudEnabledForAccount, 0) {
+  return Self<ISteamRemoteStorage>(c)->IsCloudEnabledForAccount() ? 1 : 0;
+}
+RECOMP_RS(IsCloudEnabledForApp, 0) {
+  return Self<ISteamRemoteStorage>(c)->IsCloudEnabledForApp() ? 1 : 0;
+}
+RECOMP_RS(SetCloudEnabledForApp, 1) {
+  Self<ISteamRemoteStorage>(c)->SetCloudEnabledForApp((Arg(c, 0) & 0xFF) != 0);
+  return 0;
+}
+#undef RECOMP_RS
 
 HLE_NAMED("steam_api.dll", "ISteamUtils::GetAppID", ISteamUtils_GetAppID, 0) {
   return Self<ISteamUtils>(c)->GetAppID();

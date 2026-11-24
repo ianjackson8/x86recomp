@@ -26,6 +26,8 @@ CLASSES = {  # header, class, version macro
     'isteamutils.h': ('ISteamUtils', 'STEAMUTILS_INTERFACE_VERSION'),
     'isteamapps.h': ('ISteamApps', 'STEAMAPPS_INTERFACE_VERSION'),
     'isteamuserstats.h': ('ISteamUserStats', 'STEAMUSERSTATS_INTERFACE_VERSION'),
+    'isteamremotestorage.h': ('ISteamRemoteStorage', 'STEAMREMOTESTORAGE_INTERFACE_VERSION'),
+    'isteamhttp.h': ('ISteamHTTP', 'STEAMHTTP_INTERFACE_VERSION'),
 }
 
 
