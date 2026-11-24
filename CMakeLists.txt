@@ -147,6 +147,7 @@ add_library(recomp_runtime SHARED
   src/runtime/hle/user32_window.cpp
   src/runtime/hle/display_modes.cpp
   src/runtime/hle/gdi32.cpp
+  src/runtime/host_font_coretext.cpp
   src/runtime/hle/shell_net.cpp
   src/runtime/hle/rpcrt4.cpp
   src/runtime/hle/ws2_32.cpp
@@ -155,6 +156,10 @@ add_library(recomp_runtime SHARED
 target_link_libraries(recomp_runtime PUBLIC recomp_image recomp_x87
                       SDL3::SDL3 Threads::Threads
                       PRIVATE recomp_gfx)  # presentation (hle/present.cpp)
+if(APPLE)  # host_font_coretext.cpp: GDI text
+  target_link_libraries(recomp_runtime PRIVATE "-framework CoreText" "-framework CoreGraphics"
+                        "-framework CoreFoundation")
+endif()
 # Nothing in a game refers to an HLE module's symbols: keep the linker
 # from dropping them where it links --as-needed (ld64 keeps every dylib).
 if(NOT APPLE)

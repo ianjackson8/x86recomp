@@ -462,6 +462,18 @@ if(NOT RECOMP_IOS)
   add_test(NAME host_context COMMAND host_context_test)
 endif()
 
+# host_font_test: GDI-style fonts on the host's font engine (CoreText on
+# macOS/iOS; skipped elsewhere).
+add_executable(host_font_test host_font_test.cpp ${PROJECT_SOURCE_DIR}/src/runtime/host_font_coretext.cpp
+               ${PROJECT_SOURCE_DIR}/src/runtime/log.cpp)
+target_include_directories(host_font_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_compile_features(host_font_test PRIVATE cxx_std_20)
+if(APPLE)
+  target_link_libraries(host_font_test PRIVATE "-framework CoreText" "-framework CoreGraphics"
+                        "-framework CoreFoundation")
+endif()
+add_test(NAME host_font COMMAND host_font_test)
+
 # rtti_test: MSVC RTTI casts (runtime/hle/rtti.h) over hand-built tables;
 # portable.
 add_executable(rtti_test rtti_test.cpp)
