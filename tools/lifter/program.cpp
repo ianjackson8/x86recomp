@@ -102,6 +102,23 @@ bool Program::Load(const std::string& path, const std::string& symdir,
         for (const auto& s : Split(c[1], ',')) t.push_back(Hex(s) + delta);
       }, err))
     return false;
+  // jmp [slot] through one pointer (FF 25: an absolute slot, RIP-relative
+  // on x64) is not a table: Ghidra gives the slot's initial value as its
+  // one target. A slot in a writable section can be repointed (CPU-feature
+  // dispatch tables are, on first call), so such a jump is left to
+  // Dispatch.
+  for (auto it = jumptables.begin(); it != jumptables.end();) {
+    const uint64_t va = it->first;
+    bool writable_slot = false;
+    if (in_text(va) && mem.read<uint8_t>(va) == 0xFF && mem.read<uint8_t>(va + 1) == 0x25) {
+      const int32_t disp = mem.read<int32_t>(va + 2);
+      const uint64_t slot = x64 ? va + 6 + int64_t(disp) : uint64_t(uint32_t(disp));
+      for (const auto& sec : m.img.sections)
+        if (slot - sec.va < sec.vsize && (sec.characteristics & 0x80000000u))  // MEM_WRITE
+          writable_slot = true;
+    }
+    it = writable_slot ? jumptables.erase(it) : std::next(it);
+  }
 
   // x64: every .pdata entry that is not a chained fragment starts a
   // function (ARCHITECTURE.md, "64-bit guests"); those with a language
