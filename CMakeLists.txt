@@ -147,6 +147,7 @@ add_library(recomp_runtime SHARED
   src/runtime/hle/user32_window.cpp
   src/runtime/hle/display_modes.cpp
   src/runtime/hle/gdi32.cpp
+  src/runtime/hle/cudart.cpp
   src/runtime/host_font_coretext.cpp
   src/runtime/hle/shell_net.cpp
   src/runtime/hle/rpcrt4.cpp
