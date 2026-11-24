@@ -325,6 +325,10 @@ struct Device final : com::Tagged<com::TagOf("d3d9.Device")> {
   guest::BOOL software_vp = 0;
   std::map<uint32_t, std::array<float, 16>> transforms;
   float clip_planes[6][4] = {};  // SetClipPlane (D3DMAXUSERCLIPPLANES)
+  // Fixed-function lighting: SetMaterial, SetLight (any index), LightEnable.
+  gfx::Material material{};
+  std::map<uint32_t, gfx::Light> lights;
+  std::map<uint32_t, bool> light_on;
   // SetGammaRamp's ramp (identity until set): read back, not applied to
   // the output (as the D3D8 and DirectDraw gamma controls).
   std::array<uint16_t, 768> gamma = [] {

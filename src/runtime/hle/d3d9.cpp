@@ -944,6 +944,67 @@ HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetTransform", D3DDev9_SetTransform, 3)
   return D3D_OK;
 }
 
+// Fixed-function lighting. D3DMATERIAL9 and D3DLIGHT9 have gfx::Material's
+// and gfx::Light's layouts. A light enabled before it was set is the
+// default one (white, directional, along +z); GetLightEnable reports an
+// enabled light as 128, as the runtime does.
+static_assert(sizeof(gfx::Material) == 68 && sizeof(gfx::Light) == 104);
+
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetMaterial", D3DDev9_SetMaterial, 2) {
+  Device* d = Dev(c);
+  if (!Arg(c, 1)) return D3DERR_INVALIDCALL;
+  std::memcpy(&d->material, GPtr(Arg(c, 1)), sizeof d->material);
+  d->gfx->SetMaterial(d->material);
+  return D3D_OK;
+}
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetMaterial", D3DDev9_GetMaterial, 2) {
+  if (!Arg(c, 1)) return D3DERR_INVALIDCALL;
+  std::memcpy(GPtr(Arg(c, 1)), &Dev(c)->material, sizeof(gfx::Material));
+  return D3D_OK;
+}
+// (Index, pLight)
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetLight", D3DDev9_SetLight, 3) {
+  Device* d = Dev(c);
+  if (!Arg(c, 2)) return D3DERR_INVALIDCALL;
+  gfx::Light l;
+  std::memcpy(&l, GPtr(Arg(c, 2)), sizeof l);
+  if (l.type < 1 || l.type > 3) return D3DERR_INVALIDCALL;  // point, spot, directional
+  d->lights[Arg(c, 1)] = l;
+  d->gfx->SetLight(Arg(c, 1), l);
+  return D3D_OK;
+}
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetLight", D3DDev9_GetLight, 3) {
+  Device* d = Dev(c);
+  auto it = d->lights.find(Arg(c, 1));
+  if (it == d->lights.end() || !Arg(c, 2)) return D3DERR_INVALIDCALL;
+  std::memcpy(GPtr(Arg(c, 2)), &it->second, sizeof it->second);
+  return D3D_OK;
+}
+// (Index, Enable)
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::LightEnable", D3DDev9_LightEnable, 3) {
+  Device* d = Dev(c);
+  const uint32_t i = Arg(c, 1);
+  const bool on = Arg(c, 2) != 0;
+  if (on && !d->lights.count(i)) {
+    gfx::Light l{};
+    l.type = 3;
+    l.diffuse = {1, 1, 1, 0};
+    l.direction[2] = 1;
+    d->lights[i] = l;
+    d->gfx->SetLight(i, l);
+  }
+  d->light_on[i] = on;
+  d->gfx->LightEnable(i, on);
+  return D3D_OK;
+}
+HLE_NAMED("d3d9.dll", "IDirect3DDevice9::GetLightEnable", D3DDev9_GetLightEnable, 3) {
+  Device* d = Dev(c);
+  if (!d->lights.count(Arg(c, 1)) || !Arg(c, 2)) return D3DERR_INVALIDCALL;
+  auto it = d->light_on.find(Arg(c, 1));
+  Wr32(Arg(c, 2), it != d->light_on.end() && it->second ? 128u : 0u);
+  return D3D_OK;
+}
+
 // (Index, pPlane): user clip plane in world space (clip space with a
 // vertex shader), enabled by D3DRS_CLIPPLANEENABLE.
 HLE_NAMED("d3d9.dll", "IDirect3DDevice9::SetClipPlane", D3DDev9_SetClipPlane, 3) {
