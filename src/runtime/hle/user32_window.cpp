@@ -373,6 +373,17 @@ void GameClientSize(const Window& w, int* cw, int* ch) {
   }
 }
 
+// <ID>_INPUT_LOG=1: pointer motion as SDL gives it, the mapping and the
+// client position, and GetCursorPos's answers (rate-limited), to see where
+// a pointer offset comes in.
+bool InputLog() {
+  static const bool on = [] {
+    const char* e = Env("INPUT_LOG");
+    return e && *e == '1';
+  }();
+  return on;
+}
+
 // Host window coordinates -> client coordinates: client = (host - x0) * k.
 // The frame (the client area) is shown fitted into the host window with
 // its aspect kept (gfx::FitRect, as present does), so when the host window
@@ -534,6 +545,14 @@ void HandleSdlEvent(const SDL_Event& e) {
         g_real_y = int((e.motion.y - cm.y0) * cm.ky);
         g_pointer_inside = true;
       }
+      if (InputLog()) {
+        int sw = 0, sh = 0;
+        if (SDL_Window* s = SDL_GetWindowFromID(e.motion.windowID)) SDL_GetWindowSize(s, &sw, &sh);
+        WarnF("input: motion sdl (%.1f,%.1f) window %dx%d client %dx%d map k(%.3f,%.3f) o(%.1f,%.1f) "
+              "-> (%d,%d), origin (%d,%d)\n",
+              e.motion.x, e.motion.y, sw, sh, cm.cw, cm.ch, cm.kx, cm.ky, cm.x0, cm.y0, int(g_real_x.load()),
+              int(g_real_y.load()), ox, oy);
+      }
       {
         static float rx = 0, ry = 0;  // sub-mickey remainder
         rx += e.motion.xrel;
@@ -546,7 +565,11 @@ void HandleSdlEvent(const SDL_Event& e) {
       }
       AttachClip();
       bool clipped = g_clip.on && g_clip.hwnd == h;
-      if (clipped || ExclusiveSize(h, &mw, &mh)) {
+      const bool exclusive = ExclusiveSize(h, &mw, &mh);
+      // Exclusive mode with the cursor hidden (ShowCursor count < 0): the
+      // virtual cursor below. With it shown, the game uses it as a pointer
+      // (menus) and gets where it really is, as Windows' hardware cursor.
+      if (clipped || (exclusive && g_cursor_count < 0)) {
         // Virtual cursor: the game recentres it with SetCursorPos every
         // frame and steers its own pointer by the difference, as on a
         // fullscreen Windows desktop. Real motion moves the virtual
@@ -2488,6 +2511,12 @@ bool SyncedCursorPos(int32_t* sx, int32_t* sy) {
 HLE("user32.dll", GetCursorPos, 1) {
   int32_t x = g_mouse_x, y = g_mouse_y;
   SyncedCursorPos(&x, &y);
+  if (InputLog()) {
+    static int32_t lx = -1, ly = -1;
+    if (x != lx || y != ly) WarnF("input: GetCursorPos -> (%d,%d)\n", x, y);
+    lx = x;
+    ly = y;
+  }
   Wr32(Arg(c, 0), uint32_t(x));
   Wr32(Arg(c, 0) + 4, uint32_t(y));
   return 1;
