@@ -1391,7 +1391,8 @@ float cr_acosf(float), cr_asinf(float), cr_atanf(float), cr_atan2f(float, float)
     cr_powf(float, float), cr_sinf(float), cr_tanf(float);
 double cr_atan(double), cr_cos(double), cr_exp(double), cr_log(double),
     cr_pow(double, double), cr_sin(double), cr_acos(double), cr_asin(double),
-    cr_atan2(double, double), cr_tan(double), cr_log10(double);
+    cr_atan2(double, double), cr_tan(double), cr_log10(double), cr_sinh(double),
+    cr_cosh(double), cr_tanh(double);
 }
 
 namespace {
@@ -1567,6 +1568,15 @@ RECOMP_MSVCRT_ALIAS(memcpy, "vcruntime140.dll")
 RECOMP_MSVCRT_ALIAS(memmove, "vcruntime140.dll")
 RECOMP_MSVCRT_ALIAS(memset, "vcruntime140.dll")
 RECOMP_MSVCRT_ALIAS(_purecall, "vcruntime140.dll")
+RECOMP_MSVCRT_ALIAS(_CxxThrowException, "vcruntime140.dll")
+RECOMP_MSVCRT_ALIAS(strchr, "vcruntime140.dll")
+RECOMP_MSVCRT_ALIAS(strrchr, "vcruntime140.dll")
+RECOMP_MSVCRT_ALIAS(strstr, "vcruntime140.dll")
+RECOMP_MSVCRT_ALIAS(strncmp, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(_strnicmp, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(tolower, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(toupper, "ucrtbase.dll")
+RECOMP_MSVCRT_ALIAS(getenv, "ucrtbase.dll")
 #undef RECOMP_MSVCRT_ALIAS
 static const Alias msvcrt_alias_terminate{"msvcrt.dll", "?terminate@@YAXXZ", "ucrtbase.dll",
                                           "terminate"};
@@ -1657,6 +1667,29 @@ HLE("msvcrt.dll", _clearfp, kCdecl) {
 }
 HLE("msvcrt.dll", _finite, kCdecl) { return std::isfinite(ArgD(c, 0)) ? 1 : 0; }
 
+// _fpclass(double): _FPCLASS_SNAN 1, QNAN 2, NINF 4, NN 8, ND 0x10, NZ
+// 0x20, PZ 0x40, PD 0x80, PN 0x100, PINF 0x200 (from the bits: a NaN's
+// quiet bit decides).
+HLE("msvcrt.dll", _fpclass, kCdecl) {
+  const uint64_t b = uint64_t(Arg(c, 0)) | uint64_t(Arg(c, 1)) << 32;
+  const bool neg = b >> 63;
+  const uint64_t e = (b >> 52) & 0x7FF, m = b & 0xFFFFFFFFFFFFFull;
+  if (e == 0x7FF) return m ? ((m >> 51) ? 2u : 1u) : (neg ? 4u : 0x200u);
+  if (e == 0) return m ? (neg ? 0x10u : 0x80u) : (neg ? 0x20u : 0x40u);
+  return neg ? 8u : 0x100u;
+}
+
+// _mbstrlen(s): characters in a multibyte string, in the single-byte
+// code page the runtime presents (as strlen).
+HLE("msvcrt.dll", _mbstrlen, kCdecl) {
+  if (!Arg(c, 0)) return 0xFFFFFFFFu;
+  return uint32_t(GStr(Arg(c, 0)).size());
+}
+
+// type_info::~type_info (thiscall): msvcrt frees the undecorated name it
+// cached in the object; names handed out here are not cached in it.
+HLE_NAMED("msvcrt.dll", "??1type_info@@UAE@XZ", MsvcrtTypeInfoDtor, 0) { return 0; }
+
 // The x87 intrinsics (_CIsin, ...): the argument in st(0) (st(1) and st(0)
 // for two), popped; the result pushed. Computed correctly rounded in
 // double (CORE-MATH), where msvcrt used the x87's own instructions: they
@@ -1699,6 +1732,9 @@ RECOMP_CI1(_CIsqrt, std::sqrt(x))
 RECOMP_CI2(_CIatan2, cr_atan2(x, y))
 RECOMP_CI2(_CIpow, cr_pow(x, y))
 RECOMP_CI2(_CIfmod, std::fmod(x, y))
+RECOMP_CI1(_CIsinh, cr_sinh(x))
+RECOMP_CI1(_CIcosh, cr_cosh(x))
+RECOMP_CI1(_CItanh, cr_tanh(x))
 #undef RECOMP_CI1
 #undef RECOMP_CI2
 // The UCRT exports the same intrinsics.

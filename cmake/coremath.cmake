@@ -19,7 +19,8 @@ set(COREMATH_FUNCTIONS
   binary32/sin/sinf binary32/tan/tanf
   binary64/acos/acos binary64/asin/asin binary64/atan/atan binary64/atan2/atan2
   binary64/cos/cos binary64/exp/exp binary64/log/log binary64/log10/log10
-  binary64/pow/pow binary64/sin/sin binary64/tan/tan)
+  binary64/pow/pow binary64/sin/sin binary64/tan/tan
+  binary64/sinh/sinh binary64/cosh/cosh binary64/tanh/tanh)
 set(_coremath_sources "")
 foreach(f IN LISTS COREMATH_FUNCTIONS)
   list(APPEND _coremath_sources "${coremath_SOURCE_DIR}/src/${f}.c")
