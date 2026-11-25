@@ -934,11 +934,16 @@ void InjectTestFocus() {
 //   <t> click [left|right]
 //   <t> key <SDL scancode name> [seconds]   e.g. Escape, Return, Space, A;
 //                         held for that long (default 0.08)
+//   <t> shot <name>       save the next presented frame as
+//                         $<ID>_SHOT_DIR/<name>.bmp (default dir: .)
+//   <t> quit              end the process (exit code 0)
 // '#' starts a comment.
 struct TestEvent {
   double t;
   SDL_Event e;
 };
+// SDL_EVENT_USER codes for the commands that are not input.
+constexpr Sint32 kTestShot = 1, kTestQuit = 2;
 
 void InjectTestInput() {
   static std::vector<TestEvent> q;
@@ -1020,6 +1025,15 @@ void InjectTestInput() {
         e.type = SDL_EVENT_KEY_UP;
         e.key.down = false;
         q.push_back({t + (n >= 4 ? std::atof(b) : 0.08), e});
+      } else if ((c == "shot" && n >= 3) || c == "quit") {
+        SDL_Event e{};
+        e.type = SDL_EVENT_USER;
+        e.user.code = c == "quit" ? kTestQuit : kTestShot;
+        if (c == "shot") {
+          const char* dir = Env("SHOT_DIR");
+          e.user.data1 = new std::string(std::string(dir ? dir : ".") + "/" + a + ".bmp");
+        }
+        q.push_back({t, e});
       } else {
         WarnF("TEST_INPUT: bad line: %s", line);
       }
@@ -1042,6 +1056,19 @@ void InjectTestInput() {
   bool moved = false;
   while (next < q.size() && q[next].t <= t) {
     SDL_Event e = q[next].e;
+    if (e.type == SDL_EVENT_USER) {
+      next++;
+      if (e.user.code == kTestQuit) {
+        WarnF("TEST_INPUT: quit at %.1f s\n", t);
+        std::fflush(stderr);
+        std::_Exit(0);
+      }
+      auto* path = static_cast<std::string*>(e.user.data1);
+      WarnF("TEST_INPUT: shot %s at %.1f s\n", path->c_str(), t);
+      hle::RequestShot(*path);
+      delete path;
+      continue;
+    }
     if (e.type == SDL_EVENT_MOUSE_MOTION) {
       if (moved) break;
       moved = true;
