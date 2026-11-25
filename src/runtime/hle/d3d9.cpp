@@ -461,6 +461,37 @@ HLE("d3d9.dll", Direct3DCreate9, 1) {
 }
 
 // The PIX event markers: the nesting level the event starts / ends in.
+// Direct3DShaderValidatorCreate9(): the runtime's internal shader
+// validator, which D3DCompiler feeds the bytecode it emits (Begin, one
+// Instruction per instruction, End). Shaders are checked when they are
+// created here, so this one accepts everything: every method S_OK.
+namespace {
+struct ShaderValidator final : com::Tagged<com::TagOf("d3d9.ShaderValidator")> {};
+}  // namespace
+HLE("d3d9.dll", Direct3DShaderValidatorCreate9, 0) {
+  return com::Publish(std::make_shared<ShaderValidator>(),
+                      com::Vtable("d3d9.dll", "IDirect3DShaderValidator9",
+                                  {"QueryInterface", "AddRef", "Release", "Begin", "Instruction",
+                                   "End"}));
+}
+HLE_NAMED("d3d9.dll", "IDirect3DShaderValidator9::QueryInterface", D3DShaderValidator9_QueryInterface, 3) {
+  if (Arg(c, 2)) Wr32(Arg(c, 2), 0);
+  return 0x80004002;  // E_NOINTERFACE
+}
+HLE_NAMED("d3d9.dll", "IDirect3DShaderValidator9::AddRef", D3DShaderValidator9_AddRef, 1) {
+  return com::AddRef(Arg(c, 0));
+}
+HLE_NAMED("d3d9.dll", "IDirect3DShaderValidator9::Release", D3DShaderValidator9_Release, 1) {
+  return com::Release(Arg(c, 0));
+}
+// Begin(callback, context, flags)
+HLE_NAMED("d3d9.dll", "IDirect3DShaderValidator9::Begin", D3DShaderValidator9_Begin, 4) { return 0; }
+// Instruction(file, line, tokens, token_count)
+HLE_NAMED("d3d9.dll", "IDirect3DShaderValidator9::Instruction", D3DShaderValidator9_Instruction, 5) {
+  return 0;
+}
+HLE_NAMED("d3d9.dll", "IDirect3DShaderValidator9::End", D3DShaderValidator9_End, 1) { return 0; }
+
 HLE("d3d9.dll", D3DPERF_BeginEvent, 2) { return uint32_t(g_perf_level++); }
 HLE("d3d9.dll", D3DPERF_EndEvent, 0) {
   if (g_perf_level > 0) g_perf_level--;
